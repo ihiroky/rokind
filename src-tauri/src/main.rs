@@ -25,7 +25,7 @@ use tauri::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
+    net::TcpListener as TokioTcpListener,
     sync::Mutex,
 };
 use url::Url;
@@ -200,6 +200,9 @@ fn main() {
 
 fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            let _ = show_main_window(app);
+        }))
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .manage(AppStateStore::default())
@@ -943,7 +946,7 @@ fn build_auth_url(
     Ok(url.to_string())
 }
 
-async fn wait_for_auth_callback(listener: TcpListener) -> Result<AuthCallback> {
+async fn wait_for_auth_callback(listener: TokioTcpListener) -> Result<AuthCallback> {
     let (mut stream, socket_addr) = listener
         .accept()
         .await
@@ -1149,7 +1152,7 @@ async fn start_google_auth(app: AppHandle) -> CommandResult<OAuthStartResponse> 
         }
     }
 
-    let listener = TcpListener::bind("127.0.0.1:0")
+    let listener = TokioTcpListener::bind("127.0.0.1:0")
         .await
         .map_err(|error| error.to_string())?;
     let port = listener
