@@ -245,7 +245,7 @@ const renderMainView = (
       <section class="hero">
         <div>
           <p class="eyebrow">Rokind Reminder</p>
-          <h1>Google Calendar の予定を常駐監視して、5 分前と開始時刻に全ディスプレイへ表示します。</h1>
+          <h1>Google Calendar の予定を常駐監視して、5 分前と取得時点で進行中の予定を全ディスプレイへ表示します。</h1>
           <p class="lead">
             設定画面は閉じるとタスクトレイへ隠れ、アプリ本体は残ったまま該当タイミングで always-on-top のリマインドウィンドウが出ます。
           </p>

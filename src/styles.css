@@ -447,7 +447,7 @@ button:disabled {
 
 .reminder-card h1 {
   font-size: clamp(2rem, 6vw, 3.75rem);
-  max-width: 12ch;
+  width: 100%;
   line-height: 1.1;
   min-height: calc(1.1em * 2);
   max-height: calc(1.1em * 2);
