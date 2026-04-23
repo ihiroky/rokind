@@ -1,6 +1,6 @@
 # Rokind Reminder
 
-Google Calendar の予定を常駐監視し、開始 5 分前と開始時刻に全ディスプレイへ always-on-top のリマインドを表示する Tauri v2 アプリです。
+Google Calendar の予定を常駐監視し、開始 5 分前と取得時点で進行中の予定を全ディスプレイへ always-on-top のリマインドで表示する Tauri v2 アプリです。
 
 設定画面を閉じてもアプリはタスクトレイに常駐し、必要なタイミングでリマインド専用ウィンドウを前面表示します。
 
