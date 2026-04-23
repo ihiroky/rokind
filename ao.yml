@@ -1,0 +1,597 @@
+app:
+  description: ''
+  icon: 🤖
+  icon_background: '#FFEAD5'
+  mode: workflow
+  name: Concur_承認者フロー
+  use_icon_as_answer_icon: false
+dependencies:
+- current_identifier: null
+  type: marketplace
+  value:
+    marketplace_plugin_unique_identifier: langgenius/openai:0.2.6@e2665624a156f52160927bceac9e169bd7e5ae6b936ae82575e14c90af390e6e
+    version: null
+kind: app
+version: 0.4.0
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  features:
+    file_upload:
+      allowed_file_extensions:
+      - .JPG
+      - .JPEG
+      - .PNG
+      - .GIF
+      - .WEBP
+      - .SVG
+      allowed_file_types:
+      - image
+      allowed_file_upload_methods:
+      - local_file
+      - remote_url
+      enabled: false
+      fileUploadConfig:
+        audio_file_size_limit: 50
+        batch_count_limit: 5
+        file_size_limit: 15
+        image_file_size_limit: 10
+        video_file_size_limit: 100
+        workflow_file_upload_limit: 10
+      image:
+        enabled: false
+        number_limits: 3
+        transfer_methods:
+        - local_file
+        - remote_url
+      number_limits: 3
+    opening_statement: ''
+    retriever_resource:
+      enabled: true
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
+      language: ''
+      voice: ''
+  graph:
+    edges:
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: start
+        targetType: code
+      id: 1774251250014-source-1774255367034-target
+      source: '1774251250014'
+      sourceHandle: source
+      target: '1774255367034'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: code
+      id: 1774255367034-source-1774256105927-target
+      source: '1774255367034'
+      sourceHandle: source
+      target: '1774256105927'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: code
+      id: 1774255367034-source-1774256287122-target
+      source: '1774255367034'
+      sourceHandle: source
+      target: '1774256287122'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: llm
+      id: 1774255367034-source-1774309595516-target
+      source: '1774255367034'
+      sourceHandle: source
+      target: '1774309595516'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: llm
+      id: 1774255367034-source-1774309685969-target
+      source: '1774255367034'
+      sourceHandle: source
+      target: '1774309685969'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: end
+      id: 1774256105927-source-1774309831474-target
+      source: '1774256105927'
+      sourceHandle: source
+      target: '1774309831474'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInLoop: false
+        sourceType: code
+        targetType: end
+      id: 1774256287122-source-1774309831474-target
+      source: '1774256287122'
+      sourceHandle: source
+      target: '1774309831474'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInLoop: false
+        sourceType: llm
+        targetType: end
+      id: 1774309595516-source-1774309831474-target
+      source: '1774309595516'
+      sourceHandle: source
+      target: '1774309831474'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInLoop: false
+        sourceType: llm
+        targetType: end
+      id: 1774309685969-source-1774309831474-target
+      source: '1774309685969'
+      sourceHandle: source
+      target: '1774309831474'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    nodes:
+    - data:
+        selected: false
+        title: 開始
+        type: start
+        variables:
+        - default: ''
+          hint: ''
+          label: OCR結果JSON
+          max_length: null
+          options: []
+          placeholder: ''
+          required: true
+          type: paragraph
+          variable: content
+        - default: ''
+          hint: ''
+          label: ユーザーが申請した金額
+          max_length: 256
+          options: []
+          placeholder: ''
+          required: false
+          type: text-input
+          variable: user_amount
+        - default: ''
+          hint: ''
+          label: ユーザーが申請した取引日
+          max_length: 256
+          options: []
+          placeholder: ''
+          required: false
+          type: text-input
+          variable: user_date
+        - default: ''
+          hint: ''
+          label: ユーザーが申請した支払先名
+          max_length: 256
+          options: []
+          placeholder: ''
+          required: false
+          type: text-input
+          variable: user_vendor
+        - default: ''
+          hint: ''
+          label: ユーザーが申請した事業者Noの有無
+          max_length: 256
+          options: []
+          placeholder: ''
+          required: false
+          type: text-input
+          variable: user_invoice_flag
+      height: 191
+      id: '1774251250014'
+      position:
+        x: 80
+        y: 282
+      positionAbsolute:
+        x: 80
+        y: 282
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: "import json\nimport re\nimport unicodedata\n\ndef main(content: str,\
+          \ user_amount: str, user_date: str, user_vendor: str, user_invoice_flag:\
+          \ str) -> dict:\n    def sanitize(value) -> str:\n        if value is None:\n\
+          \            return \"\"\n        if not isinstance(value, str):\n     \
+          \       value = str(value)\n        value = unicodedata.normalize(\"NFKC\"\
+          , value)\n        value = re.sub(r\"[\\t\\r\\n\\x00-\\x1f\\x7f]\", \" \"\
+          , value)\n        value = re.sub(r\" {2,}\", \" \", value)\n        return\
+          \ value.strip()\n\n    try:\n        ocr_data = json.loads(content)\n  \
+          \  except json.JSONDecodeError:\n        ocr_data = {}\n\n    # ★修正: fieldsから英語キーで取得\n\
+          \    fields = ocr_data.get(\"fields\", {})\n\n    total = fields.get(\"\
+          total\", {})\n    raw_ocr_amount     = str(total.get(\"amount\", \"\"))\
+          \ if total else \"\"\n    raw_ocr_date       = fields.get(\"transactionDate\"\
+          , \"\")\n    raw_ocr_vendor     = fields.get(\"merchantName\", \"\")\n \
+          \   raw_ocr_invoice_no = fields.get(\"merchantNumber\", \"\")\n\n    ocr_invoice_no_clean\
+          \ = sanitize(raw_ocr_invoice_no)\n\n    if ocr_invoice_no_clean:\n     \
+          \   ocr_invoice_flag = \"番号あり\"\n    else:\n        ocr_invoice_flag = \"\
+          番号なし\"\n\n    return {\n        \"ocr_amount\":        sanitize(raw_ocr_amount),\n\
+          \        \"user_amount\":       sanitize(user_amount),\n        \"ocr_date\"\
+          :          sanitize(raw_ocr_date),\n        \"user_date\":         sanitize(user_date),\n\
+          \        \"ocr_vendor\":        sanitize(raw_ocr_vendor),\n        \"user_vendor\"\
+          :       sanitize(user_vendor),\n        \"ocr_invoice_no\":    ocr_invoice_no_clean,\n\
+          \        \"user_invoice_flag\": sanitize(user_invoice_flag),\n        \"\
+          ocr_invoice_flag\":  ocr_invoice_flag,\n    }"
+        code_language: python3
+        outputs:
+          ocr_amount:
+            children: null
+            type: string
+          ocr_date:
+            children: null
+            type: string
+          ocr_invoice_flag:
+            children: null
+            type: string
+          ocr_invoice_no:
+            children: null
+            type: string
+          ocr_vendor:
+            children: null
+            type: string
+          user_amount:
+            children: null
+            type: string
+          user_date:
+            children: null
+            type: string
+          user_invoice_flag:
+            children: null
+            type: string
+          user_vendor:
+            children: null
+            type: string
+        selected: false
+        title: 前処理
+        type: code
+        variables:
+        - value_selector:
+          - '1774251250014'
+          - content
+          value_type: string
+          variable: content
+        - value_selector:
+          - '1774251250014'
+          - user_amount
+          value_type: string
+          variable: user_amount
+        - value_selector:
+          - '1774251250014'
+          - user_date
+          value_type: string
+          variable: user_date
+        - value_selector:
+          - '1774251250014'
+          - user_vendor
+          value_type: string
+          variable: user_vendor
+        - value_selector:
+          - '1774251250014'
+          - user_invoice_flag
+          value_type: string
+          variable: user_invoice_flag
+      height: 51
+      id: '1774255367034'
+      position:
+        x: 380.24214171674487
+        y: 282
+      positionAbsolute:
+        x: 380.24214171674487
+        y: 282
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: "import re\nimport unicodedata\n\ndef main(ocr_amount: str, user_amount:\
+          \ str) -> dict:\n    def to_integer(value: str):\n        if not value or\
+          \ not str(value).strip():\n            return None\n        value = unicodedata.normalize(\"\
+          NFKC\", str(value))\n        digits_only = re.sub(r\"[^\\d]\", \"\", value)\n\
+          \        if not digits_only:\n            return None\n        return int(digits_only)\n\
+          \n    if not ocr_amount or not str(ocr_amount).strip():\n        return\
+          \ {\"result\": \"アラート\"}\n    if not user_amount or not str(user_amount).strip():\n\
+          \        return {\"result\": \"アラート\"}\n\n    ocr_val = to_integer(ocr_amount)\n\
+          \    user_val = to_integer(user_amount)\n\n    if ocr_val is None or user_val\
+          \ is None:\n        return {\"result\": \"アラート\"}\n    if ocr_val == user_val:\n\
+          \        return {\"result\": \"○\"}\n    return {\"result\": \"アラート\"}"
+        code_language: python3
+        outputs:
+          result:
+            children: null
+            type: string
+        selected: false
+        title: 金額チェック
+        type: code
+        variables:
+        - value_selector:
+          - '1774255367034'
+          - ocr_amount
+          value_type: string
+          variable: ocr_amount
+        - value_selector:
+          - '1774255367034'
+          - user_amount
+          value_type: string
+          variable: user_amount
+      height: 51
+      id: '1774256105927'
+      position:
+        x: 682
+        y: 282
+      positionAbsolute:
+        x: 682
+        y: 282
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: "import re\nimport unicodedata\n\ndef main(ocr_date: str, user_date:\
+          \ str) -> dict:\n    ERA_OFFSET = {\n        \"令和\": 2018, \"R\": 2018,\n\
+          \        \"平成\": 1988, \"H\": 1988,\n        \"昭和\": 1925, \"S\": 1925,\n\
+          \        \"大正\": 1911, \"T\": 1911,\n    }\n\n    def parse_date(value:\
+          \ str):\n        if not value or not str(value).strip():\n            return\
+          \ None\n        value = unicodedata.normalize(\"NFKC\", str(value)).strip()\n\
+          \        era_pattern = re.compile(\n            r\"(令和|平成|昭和|大正|[RrHhSsTt])\\\
+          s*(元|\\d{1,2})\\s*[年./]?\\s*(\\d{1,2})\\s*[月./\\-]?\\s*(\\d{1,2})\\s*日?\"\
+          ,    \n            re.IGNORECASE,\n        )\n        m = era_pattern.search(value)\n\
+          \        if m:\n            era_str, year_str, month_str, day_str = m.groups()\n\
+          \            era_key = era_str.upper() if len(era_str) == 1 else era_str\n\
+          \            offset = ERA_OFFSET.get(era_key)\n            if offset is\
+          \ None:\n                return None\n            year_num = 1 if year_str\
+          \ == \"元\" else int(year_str)\n            year = offset + year_num\n  \
+          \          return (year, int(month_str), int(day_str))\n\n        western_pattern\
+          \ = re.compile(\n            r\"(\\d{2,4})\\s*[/\\-\\.年]\\s*(\\d{1,2})\\\
+          s*[/\\-\\.月]\\s*(\\d{1,2})\\s*日?\"\n        )\n        m = western_pattern.search(value)\n\
+          \        if m:\n            year_str, month_str, day_str = m.groups()\n\
+          \            year = int(year_str)\n            if year < 100:\n        \
+          \        year += 2000\n            return (year, int(month_str), int(day_str))\n\
+          \        return None\n\n    if not ocr_date or not str(ocr_date).strip():\n\
+          \        return {\"result\": \"注意\"}\n    if not user_date or not str(user_date).strip():\n\
+          \        return {\"result\": \"注意\"}\n\n    ocr_parsed = parse_date(ocr_date)\n\
+          \    user_parsed = parse_date(user_date)\n\n    if ocr_parsed is None or\
+          \ user_parsed is None:\n        return {\"result\": \"注意\"}\n    if ocr_parsed\
+          \ == user_parsed:\n        return {\"result\": \"○\"}\n    return {\"result\"\
+          : \"注意\"}"
+        code_language: python3
+        outputs:
+          result:
+            children: null
+            type: string
+        selected: false
+        title: 取引日チェック
+        type: code
+        variables:
+        - value_selector:
+          - '1774255367034'
+          - ocr_date
+          value_type: string
+          variable: ocr_date
+        - value_selector:
+          - '1774255367034'
+          - user_date
+          value_type: string
+          variable: user_date
+      height: 51
+      id: '1774256287122'
+      position:
+        x: 682
+        y: 372
+      positionAbsolute:
+        x: 682
+        y: 372
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        model:
+          completion_params:
+            temperature: 0.7
+          mode: chat
+          name: gpt-4o-mini
+          provider: langgenius/openai/openai
+        prompt_template:
+        - id: b039c5b0-bce0-4202-97cd-43667aaffa90
+          role: system
+          text: "# 役割\n経費精算の監査エージェント\n\n# 比較対象\n- OCR読み取り値: {{#1774255367034.ocr_vendor#}}\n\
+            - ユーザー申請値: {{#1774255367034.user_vendor#}}\n\n# 判定ルール\n以下の優先順位で判定し、最も適切なものを1つ選んでください。\n\
+            \n1. 【〇】（完全一致・実質一致）\n   - 文字が完全に一致する場合。\n   - 「支店名・店舗名（〇〇店、〇〇支店など）」の有無だけの違いである場合。\n\
+            \   - 中黒（・）、スペース、ハイフンなどの記号の有無だけの違いである場合。\n\n2. 【〇（許容）】（表記揺れ・略称）\n   -\
+            \ 株式会社や(株)など、法人格の有無や違い。\n   - 英字表記とカタカナ表記の違い（例：「Amazon」と「アマゾン」）。\n   -\
+            \ 事業者名の「略称」や「一部省略」である場合（例：「スターバックスコーヒー」と「スターバックス」）。\n   - 全角・半角の違い、または明らかな誤字脱字。\n\
+            \n3. 【アラート】\n   - 全く異なる企業・ブランド名である場合、または一方が空欄の場合。\n\n# 出力要件（絶対厳守）\nあなたの出力は、必ず「〇」「〇（許容）」「アラート」のいずれか（文字列のみ）でなければなりません。理由や説明は絶対に記述しないでください。"
+        selected: true
+        title: 支払先名チェック
+        type: llm
+        vision:
+          enabled: false
+      height: 87
+      id: '1774309595516'
+      position:
+        x: 682
+        y: 464.0105976569646
+      positionAbsolute:
+        x: 682
+        y: 464.0105976569646
+      selected: true
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        model:
+          completion_params:
+            temperature: 0.7
+          mode: chat
+          name: gpt-4o-mini
+          provider: langgenius/openai/openai
+        prompt_template:
+        - id: b22ed1ae-bae5-4453-8f35-01c2e019e7d8
+          role: system
+          text: '# 役割
+
+            インボイス登録番号の判定エージェント
+
+
+            # 判定ルール
+
+            入力データの組み合わせが、以下のパターンのどれに該当するかを確認し、指定された結果を出力してください。
+
+            ※OCR結果が空っぽ（文字がない）場合は、「空欄」として扱います。
+
+
+            | パターン | 申請内容 | OCR結果に含まれるもの | 出力すべき結果 |
+
+            | :--- | :--- | :--- | :--- |
+
+            | パターン1 | 番号あり | T＋13桁の数字、または13桁の連続した数字 | 〇 |
+
+            | パターン2 | 番号なし | 空欄、または明らかな読み取り失敗 | 〇 |
+
+            | パターン3 | 番号あり | 空欄、または明らかな読み取り失敗 | アラート |
+
+            | パターン4 | 番号なし | T＋13桁の数字、または13桁の連続した数字 | アラート |
+
+
+            # 出力例
+
+            入力: OCR結果「T1234567890123」, 申請内容「番号あり」
+
+            出力: 〇
+
+
+            入力: OCR結果「」, 申請内容「番号あり」
+
+            出力: アラート
+
+
+            ## 厳守事項
+
+            出力は「〇」または「アラート」の1語のみ。
+
+            理由・説明・記号・改行は一切含めないこと。
+
+
+            # 入力データ
+
+            OCR結果「{{#1774255367034.ocr_invoice_no#}}」, 申請内容「{{#1774255367034.user_invoice_flag#}}」
+
+            出力:'
+        selected: false
+        title: 事業者番号・有無チェック（統合版）
+        type: llm
+        vision:
+          enabled: false
+      height: 87
+      id: '1774309685969'
+      position:
+        x: 682
+        y: 590
+      positionAbsolute:
+        x: 682
+        y: 590
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        outputs:
+        - value_selector:
+          - '1774256105927'
+          - result
+          value_type: string
+          variable: amount_result
+        - value_selector:
+          - '1774256287122'
+          - result
+          value_type: string
+          variable: date_result
+        - value_selector:
+          - '1774309595516'
+          - text
+          value_type: string
+          variable: vendor_result
+        - value_selector:
+          - '1774309685969'
+          - text
+          value_type: string
+          variable: invoice_result
+        - value_selector:
+          - '1774255367034'
+          - ocr_invoice_flag
+          value_type: string
+          variable: ocr_invoice_flag
+        selected: false
+        title: 終了
+        type: end
+      height: 192
+      id: '1774309831474'
+      position:
+        x: 984
+        y: 282
+      positionAbsolute:
+        x: 984
+        y: 282
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    viewport:
+      x: -28.51791459396634
+      y: -125.12237193299234
+      zoom: 1.1453939704738967
+  rag_pipeline_variables: []

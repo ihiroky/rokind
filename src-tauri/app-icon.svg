@@ -1,0 +1,21 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="512" height="512" rx="120" fill="url(#bg)"/>
+  <rect x="104" y="122" width="304" height="248" rx="40" fill="#FFF9F0"/>
+  <rect x="104" y="122" width="304" height="82" rx="40" fill="#1C6DD0"/>
+  <rect x="154" y="90" width="28" height="72" rx="14" fill="#0D3B80"/>
+  <rect x="330" y="90" width="28" height="72" rx="14" fill="#0D3B80"/>
+  <rect x="154" y="240" width="64" height="20" rx="10" fill="#D8E5FB"/>
+  <rect x="236" y="240" width="122" height="20" rx="10" fill="#D8E5FB"/>
+  <rect x="154" y="282" width="102" height="20" rx="10" fill="#D8E5FB"/>
+  <rect x="272" y="282" width="86" height="20" rx="10" fill="#D8E5FB"/>
+  <path d="M322.549 314.254C321.195 290.204 301.275 271 277 271C252.725 271 232.805 290.204 231.451 314.254L228.971 358.313C228.911 359.384 229.766 360.284 230.839 360.284H323.161C324.234 360.284 325.089 359.384 325.029 358.313L322.549 314.254Z" fill="#F38B23"/>
+  <path d="M257 377C257 388.046 265.954 397 277 397C288.046 397 297 388.046 297 377H257Z" fill="#F38B23"/>
+  <circle cx="352" cy="354" r="52" fill="#FFB347"/>
+  <path d="M352 328V356L371 371" stroke="#7A3B00" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  <defs>
+    <linearGradient id="bg" x1="70" y1="48" x2="448" y2="456" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0E5BB7"/>
+      <stop offset="1" stop-color="#66B2FF"/>
+    </linearGradient>
+  </defs>
+</svg>
