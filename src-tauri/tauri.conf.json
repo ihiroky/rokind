@@ -19,6 +19,7 @@
         "height": 760,
         "minWidth": 920,
         "minHeight": 680,
+        "devtools": true,
         "resizable": true,
         "center": true
       }

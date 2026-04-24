@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     fs,
     net::SocketAddr,
     path::PathBuf,
@@ -21,7 +21,8 @@ use sha2::{Digest, Sha256};
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+    AppHandle, Emitter, LogicalPosition, Manager, Position, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder, WindowEvent,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -40,6 +41,11 @@ const EVENTS_LOOKAHEAD_HOURS: i64 = 12;
 const EVENTS_MAX_RESULTS: &str = "250";
 const TRAY_OPEN_ID: &str = "tray-open";
 const TRAY_QUIT_ID: &str = "tray-quit";
+const DEVTOOLS_MENU_ID_PREFIX: &str = "window-devtools:";
+const REMINDER_WINDOW_MARGIN: f64 = 0.0;
+const REMINDER_WINDOW_WIDTH: f64 = 540.0;
+const REMINDER_WINDOW_HEIGHT: f64 = 160.0;
+const REMINDER_UPCOMING_MINUTES: i64 = 5;
 
 type CommandResult<T> = std::result::Result<T, String>;
 
@@ -85,14 +91,34 @@ struct CalendarEventSummary {
     meeting_url: Option<String>,
 }
 
+// --- Reminder state machine ---
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum EventWindowDisplayState {
+    ShowingUpcoming,
+    DismissedBeforeStart,
+    ShowingCurrent,
+    DismissedAfterStart,
+}
+
+#[derive(Debug, Clone)]
+struct EventReminderRecord {
+    event_id: String,
+    title: String,
+    start_at: DateTime<Utc>,
+    end_at: Option<DateTime<Utc>>,
+    meeting_url: Option<String>,
+    location: Option<String>,
+    display_state: EventWindowDisplayState,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct ActiveReminder {
-    reminder_id: String,
+struct EventReminderPayload {
     event_id: String,
     title: String,
     start_at: String,
+    end_at: Option<String>,
     phase: ReminderPhase,
-    offset_minutes: Option<u8>,
     meeting_url: Option<String>,
     location: Option<String>,
 }
@@ -104,6 +130,27 @@ enum ReminderPhase {
     StartingNow,
 }
 
+impl EventReminderRecord {
+    fn to_payload(&self) -> EventReminderPayload {
+        EventReminderPayload {
+            event_id: self.event_id.clone(),
+            title: self.title.clone(),
+            start_at: self.start_at.to_rfc3339(),
+            end_at: self.end_at.map(|t| t.to_rfc3339()),
+            phase: match self.display_state {
+                EventWindowDisplayState::ShowingUpcoming
+                | EventWindowDisplayState::DismissedBeforeStart => ReminderPhase::Upcoming,
+                EventWindowDisplayState::ShowingCurrent
+                | EventWindowDisplayState::DismissedAfterStart => ReminderPhase::StartingNow,
+            },
+            meeting_url: self.meeting_url.clone(),
+            location: self.location.clone(),
+        }
+    }
+}
+
+// --- App state ---
+
 #[derive(Debug, Clone, Serialize)]
 struct AppStatus {
     client_id_configured: bool,
@@ -114,8 +161,6 @@ struct AppStatus {
     can_start_google_auth: bool,
     auto_reconnect_ready: bool,
     oauth_config_diagnostics: String,
-    active_reminder: Option<ActiveReminder>,
-    queued_reminder_count: usize,
     upcoming_events: Vec<CalendarEventSummary>,
     last_sync_at: Option<String>,
     last_error: Option<String>,
@@ -144,8 +189,8 @@ struct AuthCallback {
 struct AppStateStore {
     persistent: Mutex<PersistentState>,
     pending_auth: Mutex<Option<PendingAuth>>,
-    sent_reminders: Mutex<HashMap<String, DateTime<Utc>>>,
-    reminder_queue: Mutex<VecDeque<ActiveReminder>>,
+    event_reminder_states: Mutex<HashMap<String, EventReminderRecord>>,
+    sync_flow: Mutex<()>,
     is_quitting: AtomicBool,
 }
 
@@ -211,8 +256,13 @@ fn run() {
             start_google_auth,
             disconnect_google,
             refresh_events,
-            dismiss_active_reminder
+            dismiss_event_reminder,
+            get_event_reminder,
+            show_devtools_context_menu
         ])
+        .on_menu_event(|app, event| {
+            handle_window_menu_event(app, event.id().as_ref());
+        })
         .setup(|app| {
             load_persistent_state(app.handle())?;
             setup_tray_icon(app.handle())?;
@@ -314,6 +364,42 @@ fn show_main_window(app: &AppHandle) -> Result<()> {
     Ok(())
 }
 
+fn handle_window_menu_event(app: &AppHandle, menu_id: &str) {
+    if let Some(window_label) = menu_id.strip_prefix(DEVTOOLS_MENU_ID_PREFIX) {
+        open_window_devtools(app, window_label);
+    }
+}
+
+fn open_window_devtools(app: &AppHandle, window_label: &str) {
+    if let Some(window) = app.get_webview_window(window_label) {
+        window.open_devtools();
+    }
+}
+
+#[tauri::command]
+fn show_devtools_context_menu(
+    app: AppHandle,
+    window: WebviewWindow,
+    x: f64,
+    y: f64,
+) -> CommandResult<()> {
+    let item = MenuItemBuilder::with_id(
+        format!("{DEVTOOLS_MENU_ID_PREFIX}{}", window.label()),
+        "DevTools を開く",
+    )
+    .build(&app)
+    .map_err(|error| error.to_string())?;
+
+    let menu = MenuBuilder::new(&app)
+        .item(&item)
+        .build()
+        .map_err(|error| error.to_string())?;
+
+    window
+        .popup_menu_at(&menu, Position::Logical(LogicalPosition::new(x, y)))
+        .map_err(|error| error.to_string())
+}
+
 fn request_exit(app: &AppHandle) {
     let state = app.state::<AppStateStore>();
     state.is_quitting.store(true, Ordering::SeqCst);
@@ -345,7 +431,192 @@ async fn emit_app_status_updated(app: &AppHandle) {
     }
 }
 
+#[cfg(debug_assertions)]
+macro_rules! debug_log {
+    ($($arg:tt)*) => {
+        eprintln!("[rokind-debug] {}", format_args!($($arg)*));
+    };
+}
+
+#[cfg(not(debug_assertions))]
+macro_rules! debug_log {
+    ($($arg:tt)*) => {};
+}
+
+// --- Window label helpers ---
+
+fn sanitize_for_window_label(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn event_window_label(event_id: &str, monitor_index: usize) -> String {
+    format!(
+        "{}{}_{monitor_index}",
+        REMINDER_WINDOW_PREFIX,
+        sanitize_for_window_label(event_id)
+    )
+}
+
+fn sorted_showing_records(
+    states: &HashMap<String, EventReminderRecord>,
+) -> Vec<EventReminderRecord> {
+    let mut active: Vec<EventReminderRecord> = states
+        .values()
+        .filter(|r| {
+            matches!(
+                r.display_state,
+                EventWindowDisplayState::ShowingUpcoming | EventWindowDisplayState::ShowingCurrent
+            )
+        })
+        .cloned()
+        .collect();
+    active.sort_by_key(|r| r.start_at);
+    active
+}
+
+// --- Window management ---
+
+async fn open_event_reminder_windows(app: &AppHandle, record: &EventReminderRecord) -> Result<()> {
+    let state = app.state::<AppStateStore>();
+    let reminder_states = state.event_reminder_states.lock().await;
+    let active = sorted_showing_records(&reminder_states);
+    let slot = active
+        .iter()
+        .position(|r| r.event_id == record.event_id)
+        .unwrap_or(0);
+    drop(reminder_states);
+
+    debug_log!(
+        "open_event_reminder_windows: event_id={} slot={} phase={:?}",
+        record.event_id,
+        slot,
+        record.display_state
+    );
+
+    let monitors = app
+        .available_monitors()
+        .context("failed to enumerate monitors")?;
+    let payload = record.to_payload();
+
+    for (monitor_idx, monitor) in monitors.iter().enumerate() {
+        let work_area = monitor.work_area();
+        let scale = monitor.scale_factor();
+        let waw = work_area.size.width as f64 / scale;
+        let wah = work_area.size.height as f64 / scale;
+        let wax = work_area.position.x as f64 / scale;
+        let way = work_area.position.y as f64 / scale;
+
+        let max_width = (waw - REMINDER_WINDOW_MARGIN * 2.0).max(1.0);
+        let max_height = (wah - REMINDER_WINDOW_MARGIN * 2.0).max(1.0);
+        let width = REMINDER_WINDOW_WIDTH.min(max_width);
+        let height = REMINDER_WINDOW_HEIGHT.min(max_height);
+        let x = wax + (waw - width) / 2.0;
+        let base_y = way
+            + (wah * 0.05).clamp(
+                REMINDER_WINDOW_MARGIN,
+                (wah - height - REMINDER_WINDOW_MARGIN).max(REMINDER_WINDOW_MARGIN),
+            );
+        let y = base_y + slot as f64 * (height + REMINDER_WINDOW_MARGIN);
+
+        let label = event_window_label(&record.event_id, monitor_idx);
+
+        if let Some(existing) = app.get_webview_window(&label) {
+            let _ = existing.close();
+        }
+
+        WebviewWindowBuilder::new(
+            app,
+            &label,
+            WebviewUrl::App(
+                format!("index.html?view=reminder&event_id={}", record.event_id).into(),
+            ),
+        )
+        .title("Meeting Reminder")
+        .decorations(false)
+        .resizable(false)
+        .transparent(true)
+        .shadow(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .devtools(true)
+        .focused(true)
+        .position(x, y)
+        .inner_size(width, height)
+        .build()
+        .context("failed to build reminder window")?;
+
+        let _ = app.emit_to(label.as_str(), "event-reminder-update", &payload);
+    }
+
+    Ok(())
+}
+
+async fn close_event_reminder_windows(app: &AppHandle, event_id: &str) -> Result<()> {
+    debug_log!("close_event_reminder_windows: event_id={event_id}");
+    let monitors = app
+        .available_monitors()
+        .context("failed to enumerate monitors")?;
+    for (monitor_idx, _) in monitors.iter().enumerate() {
+        let label = event_window_label(event_id, monitor_idx);
+        if let Some(window) = app.get_webview_window(&label) {
+            let _ = window.close();
+        }
+    }
+    Ok(())
+}
+
+async fn upgrade_event_reminder_phase(app: &AppHandle, event_id: &str) -> Result<()> {
+    debug_log!("upgrade_event_reminder_phase: event_id={event_id}");
+    let state = app.state::<AppStateStore>();
+    let reminder_states = state.event_reminder_states.lock().await;
+    let Some(record) = reminder_states.get(event_id) else {
+        return Ok(());
+    };
+    let payload = record.to_payload();
+    drop(reminder_states);
+
+    let monitors = app
+        .available_monitors()
+        .context("failed to enumerate monitors")?;
+    for (monitor_idx, _) in monitors.iter().enumerate() {
+        let label = event_window_label(event_id, monitor_idx);
+        if app.get_webview_window(&label).is_some() {
+            let _ = app.emit_to(label.as_str(), "event-reminder-update", &payload);
+        }
+    }
+
+    Ok(())
+}
+
+async fn close_all_event_reminder_windows(app: &AppHandle) {
+    let labels: Vec<String> = app
+        .webview_windows()
+        .keys()
+        .filter(|label| label.starts_with(REMINDER_WINDOW_PREFIX))
+        .cloned()
+        .collect();
+
+    for label in labels {
+        if let Some(window) = app.get_webview_window(&label) {
+            let _ = window.close();
+        }
+    }
+}
+
+// --- Calendar sync + reminder state machine ---
+
 async fn sync_calendar_and_maybe_notify(app: &AppHandle) -> Result<()> {
+    let state = app.state::<AppStateStore>();
+    let _sync_flow = state.sync_flow.lock().await;
+
     let events = match sync_calendar_once(app).await {
         Ok(events) => events,
         Err(error) => {
@@ -355,77 +626,130 @@ async fn sync_calendar_and_maybe_notify(app: &AppHandle) -> Result<()> {
     };
 
     let now = Utc::now();
-    let poll_window = ChronoDuration::seconds(POLL_INTERVAL_SECS as i64 + 2);
-    let mut due_reminders = Vec::new();
+    let fetched_ids: std::collections::HashSet<String> =
+        events.iter().map(|e| e.id.clone()).collect();
+
+    let mut to_open: Vec<EventReminderRecord> = Vec::new();
+    let mut to_upgrade: Vec<String> = Vec::new();
+    let mut to_close: Vec<String> = Vec::new();
 
     {
-        let state = app.state::<AppStateStore>();
-        let mut sent = state.sent_reminders.lock().await;
-        sent.retain(|_, timestamp| *timestamp > now - ChronoDuration::hours(12));
+        let mut reminder_states = state.event_reminder_states.lock().await;
+
+        // Auto-close windows for events that ended (no longer in fetched list)
+        let expired: Vec<String> = reminder_states
+            .iter()
+            .filter(|(id, record)| {
+                !fetched_ids.contains(id.as_str())
+                    && matches!(
+                        record.display_state,
+                        EventWindowDisplayState::ShowingUpcoming
+                            | EventWindowDisplayState::ShowingCurrent
+                    )
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        for event_id in &expired {
+            reminder_states.remove(event_id);
+            to_close.push(event_id.clone());
+        }
+
+        // Clean up dismissed states for events no longer fetched
+        reminder_states.retain(|id, _| fetched_ids.contains(id));
 
         for event in &events {
-            let start_at = DateTime::parse_from_rfc3339(&event.start_at)
-                .with_context(|| format!("failed to parse event start: {}", event.start_at))?
-                .with_timezone(&Utc);
-
+            let start_at = match DateTime::parse_from_rfc3339(&event.start_at) {
+                Ok(dt) => dt.with_timezone(&Utc),
+                Err(_) => continue,
+            };
+            let end_at = event
+                .end_at
+                .as_deref()
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.with_timezone(&Utc));
             let remaining = start_at - now;
-            for (phase, offset_minutes) in [
-                (ReminderPhase::Upcoming, Some(5_u8)),
-                (ReminderPhase::StartingNow, None),
-            ] {
-                if reminder_is_due(remaining, phase, offset_minutes, poll_window) {
-                    let reminder_key = format!(
-                        "{}:{}:{}",
-                        event.id,
-                        event.start_at,
-                        match phase {
-                            ReminderPhase::Upcoming => "5m",
-                            ReminderPhase::StartingNow => "start",
-                        }
-                    );
-                    if sent.contains_key(&reminder_key) {
-                        continue;
-                    }
+            let is_past_start = remaining <= ChronoDuration::zero();
+            let is_upcoming =
+                !is_past_start && remaining <= ChronoDuration::minutes(REMINDER_UPCOMING_MINUTES);
 
-                    sent.insert(reminder_key.clone(), now);
-                    due_reminders.push(ActiveReminder {
-                        reminder_id: reminder_key,
-                        event_id: event.id.clone(),
-                        title: event.title.clone(),
-                        start_at: event.start_at.clone(),
-                        phase,
-                        offset_minutes,
-                        meeting_url: event.meeting_url.clone(),
-                        location: event.location.clone(),
-                    });
+            match reminder_states.get(&event.id).map(|r| r.display_state) {
+                None => {
+                    if is_upcoming || is_past_start {
+                        let record = EventReminderRecord {
+                            event_id: event.id.clone(),
+                            title: event.title.clone(),
+                            start_at,
+                            end_at,
+                            meeting_url: event.meeting_url.clone(),
+                            location: event.location.clone(),
+                            display_state: if is_past_start {
+                                EventWindowDisplayState::ShowingCurrent
+                            } else {
+                                EventWindowDisplayState::ShowingUpcoming
+                            },
+                        };
+                        reminder_states.insert(event.id.clone(), record.clone());
+                        to_open.push(record);
+                    }
                 }
+                Some(EventWindowDisplayState::ShowingUpcoming) => {
+                    if is_past_start {
+                        if let Some(rec) = reminder_states.get_mut(&event.id) {
+                            rec.display_state = EventWindowDisplayState::ShowingCurrent;
+                            rec.end_at = end_at;
+                        }
+                        to_upgrade.push(event.id.clone());
+                    }
+                }
+                Some(EventWindowDisplayState::DismissedBeforeStart) => {
+                    if is_past_start {
+                        let record = EventReminderRecord {
+                            event_id: event.id.clone(),
+                            title: event.title.clone(),
+                            start_at,
+                            end_at,
+                            meeting_url: event.meeting_url.clone(),
+                            location: event.location.clone(),
+                            display_state: EventWindowDisplayState::ShowingCurrent,
+                        };
+                        reminder_states.insert(event.id.clone(), record.clone());
+                        to_open.push(record);
+                    }
+                }
+                Some(
+                    EventWindowDisplayState::ShowingCurrent
+                    | EventWindowDisplayState::DismissedAfterStart,
+                ) => {}
             }
         }
     }
 
-    if !due_reminders.is_empty() {
-        enqueue_reminders(app, due_reminders).await?;
+    debug_log!(
+        "sync: to_open={} to_upgrade={} to_close={}",
+        to_open.len(),
+        to_upgrade.len(),
+        to_close.len()
+    );
+
+    for event_id in &to_close {
+        close_event_reminder_windows(app, event_id).await?;
+    }
+
+    to_open.sort_by_key(|r| r.start_at);
+    for record in &to_open {
+        open_event_reminder_windows(app, record).await?;
+    }
+
+    for event_id in &to_upgrade {
+        upgrade_event_reminder_phase(app, event_id).await?;
+    }
+
+    if !to_close.is_empty() || !to_open.is_empty() || !to_upgrade.is_empty() {
+        emit_app_status_updated(app).await;
     }
 
     Ok(())
-}
-
-fn reminder_is_due(
-    remaining: ChronoDuration,
-    phase: ReminderPhase,
-    offset_minutes: Option<u8>,
-    _poll_window: ChronoDuration,
-) -> bool {
-    match phase {
-        ReminderPhase::Upcoming => {
-            let Some(offset_minutes) = offset_minutes else {
-                return false;
-            };
-            let threshold = ChronoDuration::minutes(offset_minutes as i64);
-            remaining > ChronoDuration::zero() && remaining <= threshold
-        }
-        ReminderPhase::StartingNow => remaining <= ChronoDuration::zero(),
-    }
 }
 
 async fn sync_calendar_once(app: &AppHandle) -> Result<Vec<CalendarEventSummary>> {
@@ -707,68 +1031,6 @@ async fn parse_google_error(response: reqwest::Response) -> String {
     format!("HTTP {status}: {trimmed}")
 }
 
-async fn show_reminder_windows(app: &AppHandle, reminder: &ActiveReminder) -> Result<()> {
-    let monitors = app
-        .available_monitors()
-        .context("failed to enumerate monitors")?;
-
-    for (index, monitor) in monitors.iter().enumerate() {
-        let work_area = monitor.work_area();
-        let width = ((work_area.size.width as f64) * 0.3).clamp(460.0, 700.0);
-        let height = ((work_area.size.height as f64) * 0.24).clamp(220.0, 360.0);
-        let x = work_area.position.x as f64 + ((work_area.size.width as f64 - width) / 2.0);
-        let y =
-            work_area.position.y as f64 + ((work_area.size.height as f64) * 0.05).clamp(24.0, 96.0);
-        let label = format!("{REMINDER_WINDOW_PREFIX}{index}");
-
-        if let Some(window) = app.get_webview_window(&label) {
-            let _ = window.close();
-        }
-
-        let window = WebviewWindowBuilder::new(
-            app,
-            label,
-            WebviewUrl::App("index.html?view=reminder".into()),
-        )
-        .title("Meeting Reminder")
-        .decorations(false)
-        .resizable(false)
-        .transparent(true)
-        .shadow(false)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .focused(true)
-        .position(x, y)
-        .inner_size(width, height)
-        .build()
-        .context("failed to build reminder window")?;
-
-        let _ = window.emit("reminder-updated", Some(reminder.clone()));
-        let _ = window.set_focus();
-    }
-
-    let _ = app.emit("reminder-updated", Some(reminder.clone()));
-    Ok(())
-}
-
-async fn hide_reminder_windows(app: &AppHandle) -> Result<()> {
-    let labels: Vec<String> = app
-        .webview_windows()
-        .keys()
-        .filter(|label| label.starts_with(REMINDER_WINDOW_PREFIX))
-        .cloned()
-        .collect();
-
-    for label in labels {
-        if let Some(window) = app.get_webview_window(&label) {
-            let _ = window.close();
-        }
-    }
-
-    let _ = app.emit("reminder-updated", Option::<ActiveReminder>::None);
-    Ok(())
-}
-
 async fn record_error(app: &AppHandle, message: &str) {
     let state = app.state::<AppStateStore>();
     {
@@ -778,56 +1040,6 @@ async fn record_error(app: &AppHandle, message: &str) {
     let _ = persist_state(app).await;
 }
 
-async fn enqueue_reminders(app: &AppHandle, reminders: Vec<ActiveReminder>) -> Result<()> {
-    let (should_refresh_windows, current_reminder) = {
-        let state = app.state::<AppStateStore>();
-        let mut queue = state.reminder_queue.lock().await;
-        let was_empty = queue.is_empty();
-
-        for reminder in reminders {
-            if queue
-                .iter()
-                .any(|queued| queued.reminder_id == reminder.reminder_id)
-            {
-                continue;
-            }
-            queue.push_back(reminder);
-        }
-
-        (was_empty && !queue.is_empty(), queue.front().cloned())
-    };
-
-    if should_refresh_windows {
-        if let Some(reminder) = current_reminder.as_ref() {
-            show_reminder_windows(app, reminder).await?;
-        }
-    }
-
-    emit_app_status_updated(app).await;
-    Ok(())
-}
-
-async fn dismiss_current_reminder(app: &AppHandle) -> Result<()> {
-    let next_reminder = {
-        let state = app.state::<AppStateStore>();
-        let mut queue = state.reminder_queue.lock().await;
-        queue.pop_front();
-        queue.front().cloned()
-    };
-
-    match next_reminder {
-        Some(reminder) => {
-            show_reminder_windows(app, &reminder).await?;
-        }
-        None => {
-            hide_reminder_windows(app).await?;
-        }
-    }
-
-    emit_app_status_updated(app).await;
-    Ok(())
-}
-
 async fn fail_auth(app: &AppHandle, message: &str) -> String {
     record_error(app, message).await;
     let _ = app.emit("auth-flow-failed", message.to_string());
@@ -835,8 +1047,8 @@ async fn fail_auth(app: &AppHandle, message: &str) -> String {
 }
 
 async fn reset_google_auth_state(app: &AppHandle, last_error: Option<String>) -> Result<()> {
-    let state = app.state::<AppStateStore>();
     {
+        let state = app.state::<AppStateStore>();
         let mut persistent = state.persistent.lock().await;
         persistent.token = None;
         persistent.cached_events.clear();
@@ -844,19 +1056,17 @@ async fn reset_google_auth_state(app: &AppHandle, last_error: Option<String>) ->
         persistent.last_error = last_error;
     }
     {
+        let state = app.state::<AppStateStore>();
         let mut pending_auth = state.pending_auth.lock().await;
         *pending_auth = None;
     }
     {
-        let mut reminder_queue = state.reminder_queue.lock().await;
-        reminder_queue.clear();
-    }
-    {
-        let mut sent_reminders = state.sent_reminders.lock().await;
-        sent_reminders.clear();
+        let state = app.state::<AppStateStore>();
+        let mut reminder_states = state.event_reminder_states.lock().await;
+        reminder_states.clear();
     }
 
-    hide_reminder_windows(app).await?;
+    close_all_event_reminder_windows(app).await;
     persist_state(app).await?;
     emit_app_status_updated(app).await;
     Ok(())
@@ -1096,17 +1306,12 @@ async fn complete_google_auth(
     Ok(())
 }
 
+// --- Commands ---
+
 #[tauri::command]
 async fn get_app_status(app: AppHandle) -> CommandResult<AppStatus> {
     let state = app.state::<AppStateStore>();
     let persistent = state.persistent.lock().await.clone();
-    let (active_reminder, queued_reminder_count) = {
-        let reminder_queue = state.reminder_queue.lock().await;
-        (
-            reminder_queue.front().cloned(),
-            reminder_queue.len().saturating_sub(1),
-        )
-    };
     let auth_in_progress = state.pending_auth.lock().await.is_some();
     let client_id_configured = google_client_id().is_some();
     let client_secret_configured = google_client_secret().is_some();
@@ -1129,8 +1334,6 @@ async fn get_app_status(app: AppHandle) -> CommandResult<AppStatus> {
         can_start_google_auth,
         auto_reconnect_ready,
         oauth_config_diagnostics: oauth_config_diagnostics(),
-        active_reminder,
-        queued_reminder_count,
         upcoming_events: persistent.cached_events,
         last_sync_at: persistent.last_sync_at.map(|value| value.to_rfc3339()),
         last_error: persistent.last_error,
@@ -1236,43 +1439,35 @@ async fn refresh_events(app: AppHandle) -> CommandResult<AppStatus> {
 }
 
 #[tauri::command]
-async fn dismiss_active_reminder(app: AppHandle) -> CommandResult<()> {
-    dismiss_current_reminder(&app)
+async fn dismiss_event_reminder(app: AppHandle, event_id: String) -> CommandResult<()> {
+    let state = app.state::<AppStateStore>();
+    let now = Utc::now();
+
+    {
+        let mut reminder_states = state.event_reminder_states.lock().await;
+        if let Some(record) = reminder_states.get_mut(&event_id) {
+            record.display_state = if record.start_at <= now {
+                EventWindowDisplayState::DismissedAfterStart
+            } else {
+                EventWindowDisplayState::DismissedBeforeStart
+            };
+        }
+    }
+
+    close_event_reminder_windows(&app, &event_id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|e| e.to_string())?;
+
+    emit_app_status_updated(&app).await;
+    Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn upcoming_reminder_is_due_within_offset() {
-        assert!(reminder_is_due(
-            ChronoDuration::minutes(3),
-            ReminderPhase::Upcoming,
-            Some(5),
-            ChronoDuration::seconds(32),
-        ));
-    }
-
-    #[test]
-    fn starting_now_reminder_is_due_for_already_started_events() {
-        assert!(reminder_is_due(
-            ChronoDuration::minutes(-10),
-            ReminderPhase::StartingNow,
-            None,
-            ChronoDuration::seconds(32),
-        ));
-    }
-
-    #[test]
-    fn starting_now_reminder_is_not_due_before_start() {
-        assert!(!reminder_is_due(
-            ChronoDuration::seconds(1),
-            ReminderPhase::StartingNow,
-            None,
-            ChronoDuration::seconds(32),
-        ));
-    }
+#[tauri::command]
+async fn get_event_reminder(
+    app: AppHandle,
+    event_id: String,
+) -> CommandResult<Option<EventReminderPayload>> {
+    let state = app.state::<AppStateStore>();
+    let reminder_states = state.event_reminder_states.lock().await;
+    Ok(reminder_states.get(&event_id).map(|r| r.to_payload()))
 }

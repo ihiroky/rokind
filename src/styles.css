@@ -52,6 +52,11 @@ body.reminder-view #app {
   overflow: hidden;
 }
 
+body.reminder-view,
+body.reminder-view #app {
+  pointer-events: none;
+}
+
 button,
 input {
   font: inherit;
@@ -408,25 +413,27 @@ button:disabled {
 }
 
 .reminder-shell {
-  min-height: 100%;
+  height: 100%;
   display: grid;
-  place-items: center;
+  justify-items: center;
+  align-content: start;
   padding: 10px;
   overflow: hidden;
-  cursor: grab;
   background: transparent;
-}
-
-.reminder-shell--empty {
-  background: transparent;
+  pointer-events: none;
 }
 
 .reminder-card {
-  width: min(680px, 100%);
+  width: min(520px, 100%);
   max-height: 100%;
-  padding: 36px;
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(255, 247, 232, 0.96));
+  display: grid;
+  gap: 12px;
+  padding: 16px 18px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.96);
+  border-radius: 8px;
+  cursor: grab;
+  pointer-events: auto;
 }
 
 .reminder-card--past {
@@ -435,64 +442,85 @@ button:disabled {
     linear-gradient(135deg, rgba(255, 249, 244, 0.98), rgba(255, 235, 223, 0.98));
 }
 
-.countdown-badge {
-  display: inline-flex;
-  margin-bottom: 12px;
-  padding: 8px 14px;
-  border-radius: 999px;
-  background: rgba(242, 122, 28, 0.14);
-  color: #a44b07;
-  font-weight: 800;
+.reminder-current {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
 }
 
-.reminder-card h1 {
-  font-size: clamp(2rem, 6vw, 3.75rem);
-  width: 100%;
-  line-height: 1.1;
-  min-height: calc(1.1em * 2);
-  max-height: calc(1.1em * 2);
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  text-overflow: ellipsis;
-  word-break: break-word;
+.reminder-current .eyebrow {
+  margin-bottom: 2px;
 }
 
-.reminder-time,
-.reminder-location {
-  font-size: 1.15rem;
-  color: #33415f;
+.reminder-current-row {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  min-width: 0;
 }
 
 .reminder-time {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  color: var(--primary-strong);
+  font-size: 1.02rem;
+  font-weight: 800;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.reminder-time-delta {
+  color: #52627f;
+  font-size: 0.74rem;
+  font-weight: 800;
+}
+
+.reminder-time-delta--elapsed {
+  color: var(--danger-text);
+}
+
+.reminder-title {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  font-size: 1.06rem;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reminder-location {
+  min-width: 0;
+  margin: 0;
+  font-size: 0.92rem;
+  color: #33415f;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .reminder-time--past {
   color: var(--warning-text);
-  font-weight: 700;
-}
-
-.reminder-time-status {
-  display: inline-flex;
-  padding: 5px 10px;
-  border-radius: 999px;
-  background: var(--warning-bg);
-  color: var(--warning-text);
-  font-size: 0.84rem;
-  font-weight: 800;
 }
 
 .reminder-actions {
   display: flex;
-  gap: 12px;
+  gap: 8px;
   flex-wrap: wrap;
-  margin-top: 24px;
+  margin-top: 0;
+  padding-bottom: 2px;
   cursor: default;
+}
+
+.reminder-actions .primary-button,
+.reminder-actions .ghost-button {
+  border-radius: 6px;
+  padding: 7px 12px;
+  font-size: 0.9rem;
+  line-height: 1.2;
 }
 
 @media (max-width: 860px) {
@@ -513,7 +541,4 @@ button:disabled {
     align-items: flex-start;
   }
 
-  .reminder-card {
-    padding: 24px;
-  }
 }
