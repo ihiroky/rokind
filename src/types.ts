@@ -18,11 +18,15 @@ export interface AppStatus {
   can_start_google_auth: boolean;
   auto_reconnect_ready: boolean;
   oauth_config_diagnostics: string;
-  active_reminder: ActiveReminder | null;
+  reminder_panel: ReminderPanelState | null;
   queued_reminder_count: number;
   upcoming_events: CalendarEventSummary[];
   last_sync_at: string | null;
   last_error: string | null;
+}
+
+export interface ReminderPanelState {
+  reminders: ActiveReminder[];
 }
 
 export interface ActiveReminder {

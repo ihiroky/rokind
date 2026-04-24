@@ -97,6 +97,11 @@ struct ActiveReminder {
     location: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ReminderPanelState {
+    reminders: Vec<ActiveReminder>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum ReminderPhase {
@@ -114,7 +119,7 @@ struct AppStatus {
     can_start_google_auth: bool,
     auto_reconnect_ready: bool,
     oauth_config_diagnostics: String,
-    active_reminder: Option<ActiveReminder>,
+    reminder_panel: Option<ReminderPanelState>,
     queued_reminder_count: usize,
     upcoming_events: Vec<CalendarEventSummary>,
     last_sync_at: Option<String>,
@@ -146,6 +151,7 @@ struct AppStateStore {
     pending_auth: Mutex<Option<PendingAuth>>,
     sent_reminders: Mutex<HashMap<String, DateTime<Utc>>>,
     reminder_queue: Mutex<VecDeque<ActiveReminder>>,
+    reminder_flow: Mutex<()>,
     is_quitting: AtomicBool,
 }
 
@@ -211,7 +217,8 @@ fn run() {
             start_google_auth,
             disconnect_google,
             refresh_events,
-            dismiss_active_reminder
+            close_reminder_window,
+            dismiss_reminder
         ])
         .setup(|app| {
             load_persistent_state(app.handle())?;
@@ -342,6 +349,16 @@ fn spawn_polling_loop(app: AppHandle) {
 async fn emit_app_status_updated(app: &AppHandle) {
     if let Ok(status) = get_app_status(app.clone()).await {
         let _ = app.emit("app-status-updated", status);
+    }
+}
+
+fn build_reminder_panel(reminders: &VecDeque<ActiveReminder>) -> Option<ReminderPanelState> {
+    if reminders.is_empty() {
+        None
+    } else {
+        Some(ReminderPanelState {
+            reminders: reminders.iter().cloned().collect(),
+        })
     }
 }
 
@@ -707,7 +724,7 @@ async fn parse_google_error(response: reqwest::Response) -> String {
     format!("HTTP {status}: {trimmed}")
 }
 
-async fn show_reminder_windows(app: &AppHandle, reminder: &ActiveReminder) -> Result<()> {
+async fn show_reminder_windows(app: &AppHandle, panel: &ReminderPanelState) -> Result<()> {
     let monitors = app
         .available_monitors()
         .context("failed to enumerate monitors")?;
@@ -743,11 +760,11 @@ async fn show_reminder_windows(app: &AppHandle, reminder: &ActiveReminder) -> Re
         .build()
         .context("failed to build reminder window")?;
 
-        let _ = window.emit("reminder-updated", Some(reminder.clone()));
+        let _ = window.emit("reminder-updated", Some(panel.clone()));
         let _ = window.set_focus();
     }
 
-    let _ = app.emit("reminder-updated", Some(reminder.clone()));
+    let _ = app.emit("reminder-updated", Some(panel.clone()));
     Ok(())
 }
 
@@ -765,7 +782,7 @@ async fn hide_reminder_windows(app: &AppHandle) -> Result<()> {
         }
     }
 
-    let _ = app.emit("reminder-updated", Option::<ActiveReminder>::None);
+    let _ = app.emit("reminder-updated", Option::<ReminderPanelState>::None);
     Ok(())
 }
 
@@ -779,10 +796,12 @@ async fn record_error(app: &AppHandle, message: &str) {
 }
 
 async fn enqueue_reminders(app: &AppHandle, reminders: Vec<ActiveReminder>) -> Result<()> {
-    let (should_refresh_windows, current_reminder) = {
-        let state = app.state::<AppStateStore>();
+    let state = app.state::<AppStateStore>();
+    let _reminder_flow = state.reminder_flow.lock().await;
+
+    let panel = {
         let mut queue = state.reminder_queue.lock().await;
-        let was_empty = queue.is_empty();
+        let mut added = false;
 
         for reminder in reminders {
             if queue
@@ -792,14 +811,46 @@ async fn enqueue_reminders(app: &AppHandle, reminders: Vec<ActiveReminder>) -> R
                 continue;
             }
             queue.push_back(reminder);
+            added = true;
         }
 
-        (was_empty && !queue.is_empty(), queue.front().cloned())
+        if added {
+            build_reminder_panel(&queue)
+        } else {
+            None
+        }
     };
 
-    if should_refresh_windows {
-        if let Some(reminder) = current_reminder.as_ref() {
-            show_reminder_windows(app, reminder).await?;
+    if let Some(panel) = panel.as_ref() {
+        show_reminder_windows(app, panel).await?;
+    }
+
+    emit_app_status_updated(app).await;
+    Ok(())
+}
+
+async fn dismiss_reminder_by_id(app: &AppHandle, reminder_id: &str) -> Result<()> {
+    let state = app.state::<AppStateStore>();
+    let _reminder_flow = state.reminder_flow.lock().await;
+
+    let next_panel = {
+        let mut queue = state.reminder_queue.lock().await;
+        let before_len = queue.len();
+        queue.retain(|reminder| reminder.reminder_id != reminder_id);
+
+        if queue.len() == before_len {
+            return Ok(());
+        }
+
+        build_reminder_panel(&queue)
+    };
+
+    match next_panel {
+        Some(panel) => {
+            show_reminder_windows(app, &panel).await?;
+        }
+        None => {
+            hide_reminder_windows(app).await?;
         }
     }
 
@@ -807,23 +858,16 @@ async fn enqueue_reminders(app: &AppHandle, reminders: Vec<ActiveReminder>) -> R
     Ok(())
 }
 
-async fn dismiss_current_reminder(app: &AppHandle) -> Result<()> {
-    let next_reminder = {
-        let state = app.state::<AppStateStore>();
-        let mut queue = state.reminder_queue.lock().await;
-        queue.pop_front();
-        queue.front().cloned()
-    };
+async fn close_current_reminder_window(app: &AppHandle) -> Result<()> {
+    let state = app.state::<AppStateStore>();
+    let _reminder_flow = state.reminder_flow.lock().await;
 
-    match next_reminder {
-        Some(reminder) => {
-            show_reminder_windows(app, &reminder).await?;
-        }
-        None => {
-            hide_reminder_windows(app).await?;
-        }
+    {
+        let mut queue = state.reminder_queue.lock().await;
+        queue.clear();
     }
 
+    hide_reminder_windows(app).await?;
     emit_app_status_updated(app).await;
     Ok(())
 }
@@ -836,6 +880,8 @@ async fn fail_auth(app: &AppHandle, message: &str) -> String {
 
 async fn reset_google_auth_state(app: &AppHandle, last_error: Option<String>) -> Result<()> {
     let state = app.state::<AppStateStore>();
+    let _reminder_flow = state.reminder_flow.lock().await;
+
     {
         let mut persistent = state.persistent.lock().await;
         persistent.token = None;
@@ -1100,12 +1146,9 @@ async fn complete_google_auth(
 async fn get_app_status(app: AppHandle) -> CommandResult<AppStatus> {
     let state = app.state::<AppStateStore>();
     let persistent = state.persistent.lock().await.clone();
-    let (active_reminder, queued_reminder_count) = {
+    let (reminder_panel, queued_reminder_count) = {
         let reminder_queue = state.reminder_queue.lock().await;
-        (
-            reminder_queue.front().cloned(),
-            reminder_queue.len().saturating_sub(1),
-        )
+        (build_reminder_panel(&reminder_queue), reminder_queue.len())
     };
     let auth_in_progress = state.pending_auth.lock().await.is_some();
     let client_id_configured = google_client_id().is_some();
@@ -1129,7 +1172,7 @@ async fn get_app_status(app: AppHandle) -> CommandResult<AppStatus> {
         can_start_google_auth,
         auto_reconnect_ready,
         oauth_config_diagnostics: oauth_config_diagnostics(),
-        active_reminder,
+        reminder_panel,
         queued_reminder_count,
         upcoming_events: persistent.cached_events,
         last_sync_at: persistent.last_sync_at.map(|value| value.to_rfc3339()),
@@ -1236,8 +1279,15 @@ async fn refresh_events(app: AppHandle) -> CommandResult<AppStatus> {
 }
 
 #[tauri::command]
-async fn dismiss_active_reminder(app: AppHandle) -> CommandResult<()> {
-    dismiss_current_reminder(&app)
+async fn close_reminder_window(app: AppHandle) -> CommandResult<()> {
+    close_current_reminder_window(&app)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn dismiss_reminder(app: AppHandle, reminder_id: String) -> CommandResult<()> {
+    dismiss_reminder_by_id(&app, &reminder_id)
         .await
         .map_err(|error| error.to_string())
 }

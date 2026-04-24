@@ -10,7 +10,7 @@ import {
 } from "@tauri-apps/plugin-autostart";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
-import type { ActiveReminder, AppStatus, OAuthStartResponse } from "./types";
+import type { ActiveReminder, AppStatus, OAuthStartResponse, ReminderPanelState } from "./types";
 
 type LaunchOnLoginState = {
   busy: boolean;
@@ -370,8 +370,17 @@ const renderMainView = (
   `;
 };
 
-const renderReminderView = (reminder: ActiveReminder | null) => {
-  if (!reminder) {
+type ReminderRenderState = {
+  selectedReminder: ActiveReminder | null;
+  selectedReminderId: string | null;
+};
+
+const renderReminderView = (
+  panel: ReminderPanelState | null,
+  selectedReminderId: string | null,
+  expandedReminderList: boolean
+): ReminderRenderState => {
+  if (!panel || panel.reminders.length === 0) {
     app.innerHTML = `
       <main class="reminder-shell reminder-shell--empty" data-reminder-drag-region>
         <div class="reminder-card">
@@ -382,66 +391,185 @@ const renderReminderView = (reminder: ActiveReminder | null) => {
     `;
     fitReminderWindowToContent();
     enableReminderWindowDrag();
-    return;
+    return {
+      selectedReminder: null,
+      selectedReminderId: null
+    };
   }
 
-  const isStartingNow = reminder.phase === "starting_now";
+  const reminders = panel.reminders;
+  const collapsedVisibleLimit = 3;
+  const collapsedReminders = reminders.slice(0, collapsedVisibleLimit);
+  const selectedReminder =
+    reminders.find((reminder) => reminder.reminder_id === selectedReminderId) ??
+    collapsedReminders[0] ??
+    reminders[0];
+  const visibleReminders = expandedReminderList ? reminders : collapsedReminders;
+  const hiddenReminderCount = Math.max(reminders.length - collapsedVisibleLimit, 0);
+  const isStartingNow = selectedReminder.phase === "starting_now";
   const eyebrowLabel = isStartingNow ? "current schedule" : "upcomming schedule";
-  const reminderTimeLabel = formatDateTime(reminder.start_at);
-  const isPast = isPastDateTime(reminder.start_at);
+  const reminderTimeLabel = formatDateTime(selectedReminder.start_at);
+  const isPast = isPastDateTime(selectedReminder.start_at);
+  const reminderList = visibleReminders
+    .map((reminder) => {
+      const selected = reminder.reminder_id === selectedReminder.reminder_id;
+
+      return `
+        <button
+          type="button"
+          class="reminder-list-item ${selected ? "reminder-list-item--selected" : ""}"
+          data-reminder-select="${escapeHtml(reminder.reminder_id)}"
+          data-no-window-drag
+          aria-pressed="${selected ? "true" : "false"}"
+        >
+          <span class="reminder-list-time">${formatDateTime(reminder.start_at)}</span>
+          <span class="reminder-list-body">
+            <strong>${escapeHtml(reminder.title)}</strong>
+            <small>${escapeHtml(reminder.location ?? "場所未設定")}</small>
+          </span>
+          <span class="reminder-list-pill ${reminder.meeting_url ? "reminder-list-pill--active" : ""}">
+            ${reminder.meeting_url ? "Meet" : "No URL"}
+          </span>
+        </button>
+      `;
+    })
+    .join("");
 
   app.innerHTML = `
     <main class="reminder-shell" data-reminder-drag-region>
       <section class="reminder-card ${isPast ? "reminder-card--past" : ""}">
-        <p class="eyebrow">${eyebrowLabel}</p>
-        <h1>${escapeHtml(reminder.title)}</h1>
-        <p class="reminder-time ${isPast ? "reminder-time--past" : ""}">
-          ${reminderTimeLabel}
-          ${isPast ? '<span class="reminder-time-status">開始時刻を過ぎています</span>' : ""}
-        </p>
-        <p class="reminder-location">${escapeHtml(reminder.location ?? "場所の記載はありません")}</p>
-        <div class="reminder-actions" data-no-window-drag>
-          <button id="dismiss-button" type="button" class="ghost-button">閉じる</button>
-          <button id="join-button" type="button" class="primary-button" ${reminder.meeting_url ? "" : "disabled"}>Meeting URL を開く</button>
+        <div class="reminder-hero">
+          <div class="reminder-hero-header">
+            <p class="eyebrow">${eyebrowLabel}</p>
+            ${
+              reminders.length > 1
+                ? `<span class="reminder-count-pill">${reminders.length}件の通知</span>`
+                : ""
+            }
+          </div>
+          <h1>${escapeHtml(selectedReminder.title)}</h1>
+          <p class="reminder-time ${isPast ? "reminder-time--past" : ""}">
+            ${reminderTimeLabel}
+            ${isPast ? '<span class="reminder-time-status">開始時刻を過ぎています</span>' : ""}
+          </p>
+          <p class="reminder-location">${escapeHtml(selectedReminder.location ?? "場所の記載はありません")}</p>
+          <div class="reminder-actions" data-no-window-drag>
+            <button id="close-reminder-window-button" type="button" class="ghost-button">閉じる</button>
+            <button id="join-button" type="button" class="primary-button" ${selectedReminder.meeting_url ? "" : "disabled"}>Meeting URL を開く</button>
+          </div>
         </div>
+
+        ${
+          reminders.length > 1
+            ? `
+              <section class="reminder-list-section" data-no-window-drag>
+                <div class="reminder-list-header">
+                  <div>
+                    <p class="eyebrow">Queue</p>
+                    <h2>通知中の予定</h2>
+                  </div>
+                  <span class="reminder-list-summary">${reminders.length}件</span>
+                </div>
+                <div class="reminder-list">
+                  ${reminderList}
+                </div>
+                ${
+                  hiddenReminderCount > 0
+                    ? `
+                      <button id="toggle-reminder-list-button" type="button" class="secondary-button reminder-toggle-button">
+                        ${expandedReminderList ? "折りたたむ" : `+${hiddenReminderCount}件を表示`}
+                      </button>
+                    `
+                    : reminders.length > collapsedVisibleLimit
+                      ? `
+                        <button id="toggle-reminder-list-button" type="button" class="secondary-button reminder-toggle-button">
+                          折りたたむ
+                        </button>
+                      `
+                      : ""
+                }
+              </section>
+            `
+            : ""
+        }
       </section>
     </main>
   `;
 
-  document.querySelector<HTMLButtonElement>("#dismiss-button")?.addEventListener("click", async () => {
-    await invoke("dismiss_active_reminder");
-  });
-
-  document.querySelector<HTMLButtonElement>("#join-button")?.addEventListener("click", async () => {
-    if (!reminder.meeting_url) {
-      return;
-    }
-
-    await openUrl(reminder.meeting_url);
-    await invoke("dismiss_active_reminder");
-  });
-
   fitReminderWindowToContent();
   enableReminderWindowDrag();
+  return {
+    selectedReminder,
+    selectedReminderId: selectedReminder.reminder_id
+  };
 };
 
 const bootReminderView = async () => {
-  renderReminderView(null);
+  let selectedReminderId: string | null = null;
+  let expandedReminderList = false;
+
+  const redraw = () => {
+    const panel = status.reminder_panel;
+    if (!panel || panel.reminders.length <= 3) {
+      expandedReminderList = false;
+    }
+
+    const renderState = renderReminderView(panel, selectedReminderId, expandedReminderList);
+    selectedReminderId = renderState.selectedReminderId;
+
+    if (!renderState.selectedReminder) {
+      return;
+    }
+
+    const selectedReminder = renderState.selectedReminder;
+
+    document.querySelector<HTMLButtonElement>("#close-reminder-window-button")?.addEventListener("click", async () => {
+      await invoke("close_reminder_window");
+    });
+
+    document.querySelector<HTMLButtonElement>("#join-button")?.addEventListener("click", async () => {
+      if (!selectedReminder.meeting_url) {
+        return;
+      }
+
+      await openUrl(selectedReminder.meeting_url);
+      await invoke("dismiss_reminder", { reminderId: selectedReminder.reminder_id });
+    });
+
+    document.querySelector<HTMLButtonElement>("#toggle-reminder-list-button")?.addEventListener("click", () => {
+      expandedReminderList = !expandedReminderList;
+      redraw();
+    });
+
+    document.querySelectorAll<HTMLButtonElement>("[data-reminder-select]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const nextReminderId = button.dataset.reminderSelect;
+        if (!nextReminderId) {
+          return;
+        }
+
+        selectedReminderId = nextReminderId;
+        redraw();
+      });
+    });
+  };
+
+  renderReminderView(null, null, false);
 
   let status = await invoke<AppStatus>("get_app_status");
-  renderReminderView(status.active_reminder);
+  redraw();
   window.setInterval(() => {
-    renderReminderView(status.active_reminder);
+    redraw();
   }, CLOCK_TICK_MS);
 
-  await listen<ActiveReminder | null>("reminder-updated", (event) => {
-    status = { ...status, active_reminder: event.payload };
-    renderReminderView(status.active_reminder);
+  await listen<ReminderPanelState | null>("reminder-updated", (event) => {
+    status = { ...status, reminder_panel: event.payload };
+    redraw();
   });
 
   await listen<AppStatus>("app-status-updated", (event) => {
     status = event.payload;
-    renderReminderView(status.active_reminder);
+    redraw();
   });
 
   const currentWindow = getCurrentWindow();
@@ -642,8 +770,8 @@ const bootMainView = async () => {
     void pollAuthUntilSettled();
   }
 
-  await listen<ActiveReminder | null>("reminder-updated", (event) => {
-    status = { ...status, active_reminder: event.payload };
+  await listen<ReminderPanelState | null>("reminder-updated", (event) => {
+    status = { ...status, reminder_panel: event.payload };
     redraw();
   });
 
