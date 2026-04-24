@@ -18,6 +18,15 @@ type LaunchOnLoginState = {
   errorMessage: string;
 };
 
+type OAuthFormState = {
+  busy: boolean;
+  clientId: string;
+  clientSecret: string;
+  dirty: boolean;
+  errorMessage: string;
+  feedbackMessage: string;
+};
+
 const app = document.querySelector<HTMLDivElement>("#app");
 
 if (!app) {
@@ -172,7 +181,15 @@ const renderMainView = (
   busyMessage = "",
   copiedEventId: string | null = null,
   copyFeedbackMessage = "",
-  launchOnLoginState: LaunchOnLoginState = { busy: false, enabled: null, errorMessage: "" }
+  launchOnLoginState: LaunchOnLoginState = { busy: false, enabled: null, errorMessage: "" },
+  oauthFormState: OAuthFormState = {
+    busy: false,
+    clientId: status.google_client_id ?? "",
+    clientSecret: status.google_client_secret ?? "",
+    dirty: false,
+    errorMessage: "",
+    feedbackMessage: ""
+  }
 ) => {
   const launchOnLoginStatus =
     launchOnLoginState.enabled === null
@@ -282,9 +299,53 @@ const renderMainView = (
             <p class="eyebrow">Google OAuth</p>
             <h3>Google OAuth 設定</h3>
             <p class="helper subtle">
-              Google Calendar の予定取得と再接続に使う認証設定です。接続状態の確認や認証フローの開始もここから行えます。
+              Google Calendar の予定取得と再接続に使う認証設定です。
             </p>
           </div>
+          <label class="toggle-row">
+            <span>
+              <strong>OAuth Client設定</strong>
+            </span>
+            <form id="oauth-settings-form" class="oauth-form">
+              <label class="field" for="google-client-id-input">
+                <span>Google Client ID</span>
+                <input
+                  id="google-client-id-input"
+                  type="text"
+                  size="80"
+                  autocomplete="off"
+                  spellcheck="false"
+                  value="${escapeHtml(oauthFormState.clientId)}"
+                  ${oauthFormState.busy ? "disabled" : ""}
+                />
+              </label>
+              <label class="field" for="google-client-secret-input">
+                <span>Google Client Secret</span>
+                <input
+                  id="google-client-secret-input"
+                  type="password"
+                  size="80"
+                  autocomplete="off"
+                  spellcheck="false"
+                  value="${escapeHtml(oauthFormState.clientSecret)}"
+                  ${oauthFormState.busy ? "disabled" : ""}
+                />
+              </label>
+              <div class="action-row">
+                <button type="submit" class="secondary-button" ${oauthFormState.busy ? "disabled" : ""}>OAuth 設定を保存</button>
+              </div>
+            </form>
+          </label>
+          ${
+            oauthFormState.errorMessage
+              ? `<div class="error-banner settings-banner">${escapeHtml(oauthFormState.errorMessage)}</div>`
+              : ""
+          }
+          ${
+            oauthFormState.feedbackMessage
+              ? `<div class="busy-banner settings-banner">${escapeHtml(oauthFormState.feedbackMessage)}</div>`
+              : ""
+          }
           <div class="action-row">
             <button id="connect-button" type="button" class="primary-button" ${status.can_start_google_auth ? "" : "disabled"}>
               ${status.auth_in_progress ? "認証ページを開く" : status.signed_in ? "再接続" : "Google で接続"}
@@ -292,12 +353,6 @@ const renderMainView = (
             <button id="refresh-button" type="button" class="secondary-button">予定を再取得</button>
             <button id="disconnect-button" type="button" class="ghost-button" ${status.signed_in || status.auth_in_progress ? "" : "disabled"}>切断</button>
           </div>
-
-          ${
-            !status.client_id_configured
-              ? `<div class="helper">OAuth 読み込み状況: ${escapeHtml(status.oauth_config_diagnostics)}</div>`
-              : ""
-          }
         </div>
 
         <div class="settings-card">
@@ -482,6 +537,14 @@ const bootMainView = async () => {
     enabled: null,
     errorMessage: ""
   };
+  let oauthFormState: OAuthFormState = {
+    busy: false,
+    clientId: status.google_client_id ?? "",
+    clientSecret: status.google_client_secret ?? "",
+    dirty: false,
+    errorMessage: "",
+    feedbackMessage: ""
+  };
 
   const resetCopyFeedback = () => {
     copiedEventId = null;
@@ -489,8 +552,90 @@ const bootMainView = async () => {
     redraw();
   };
 
+  const syncOAuthFormWithStatus = () => {
+    if (oauthFormState.busy || oauthFormState.dirty) {
+      return;
+    }
+
+    oauthFormState = {
+      ...oauthFormState,
+      clientId: status.google_client_id ?? "",
+      clientSecret: status.google_client_secret ?? ""
+    };
+  };
+
   const redraw = () => {
-    renderMainView(status, busyMessage, copiedEventId, copyFeedbackMessage, launchOnLoginState);
+    syncOAuthFormWithStatus();
+    renderMainView(
+      status,
+      busyMessage,
+      copiedEventId,
+      copyFeedbackMessage,
+      launchOnLoginState,
+      oauthFormState
+    );
+
+    const clientIdInput = document.querySelector<HTMLInputElement>("#google-client-id-input");
+    const clientSecretInput = document.querySelector<HTMLInputElement>("#google-client-secret-input");
+
+    clientIdInput?.addEventListener("input", () => {
+      oauthFormState = {
+        ...oauthFormState,
+        clientId: clientIdInput.value,
+        dirty: true,
+        errorMessage: "",
+        feedbackMessage: ""
+      };
+    });
+
+    clientSecretInput?.addEventListener("input", () => {
+      oauthFormState = {
+        ...oauthFormState,
+        clientSecret: clientSecretInput.value,
+        dirty: true,
+        errorMessage: "",
+        feedbackMessage: ""
+      };
+    });
+
+    document.querySelector<HTMLFormElement>("#oauth-settings-form")?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+
+      oauthFormState = {
+        ...oauthFormState,
+        clientId: clientIdInput?.value ?? oauthFormState.clientId,
+        clientSecret: clientSecretInput?.value ?? oauthFormState.clientSecret,
+        busy: true,
+        errorMessage: "",
+        feedbackMessage: "OAuth 設定を保存しています..."
+      };
+      redraw();
+
+      try {
+        status = await invoke<AppStatus>("save_google_oauth_settings", {
+          clientId: oauthFormState.clientId,
+          clientSecret: oauthFormState.clientSecret
+        });
+        authPolling = false;
+        oauthFormState = {
+          busy: false,
+          clientId: status.google_client_id ?? "",
+          clientSecret: status.google_client_secret ?? "",
+          dirty: false,
+          errorMessage: "",
+          feedbackMessage: "OAuth 設定を保存しました。必要に応じて Google へ再接続してください。"
+        };
+      } catch (error) {
+        oauthFormState = {
+          ...oauthFormState,
+          busy: false,
+          errorMessage: `OAuth 設定を保存できませんでした: ${describeError(error)}`,
+          feedbackMessage: ""
+        };
+      }
+
+      redraw();
+    });
 
     document.querySelector<HTMLButtonElement>("#refresh-button")?.addEventListener("click", async () => {
       busyMessage = "Google Calendar を再取得しています...";

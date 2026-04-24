@@ -22,6 +22,10 @@ export interface EventReminderPayload {
 export interface AppStatus {
   client_id_configured: boolean;
   client_secret_configured: boolean;
+  google_client_id: string | null;
+  google_client_secret: string | null;
+  google_client_id_using_initial: boolean;
+  google_client_secret_using_initial: boolean;
   signed_in: boolean;
   polling_enabled: boolean;
   auth_in_progress: boolean;
