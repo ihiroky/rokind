@@ -576,7 +576,6 @@ async fn open_event_reminder_windows(app: &AppHandle, record: &EventReminderReco
         .title("Meeting Reminder")
         .decorations(false)
         .resizable(false)
-        .transparent(true)
         .shadow(false)
         .always_on_top(true)
         .skip_taskbar(true)

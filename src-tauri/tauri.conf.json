@@ -15,6 +15,7 @@
         "label": "main",
         "title": "Rokind Reminder",
         "visible": false,
+        "transparent": true,
         "width": 1080,
         "height": 760,
         "minWidth": 920,
@@ -24,6 +25,7 @@
         "center": true
       }
     ],
+    "macOSPrivateApi": true,
     "security": {
       "csp": null
     }
