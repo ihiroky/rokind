@@ -2,7 +2,7 @@ import "./styles.css";
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { LogicalPosition, LogicalSize, currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   disable as disableAutostart,
   enable as enableAutostart,
@@ -10,7 +10,7 @@ import {
 } from "@tauri-apps/plugin-autostart";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
-import type { ActiveReminder, AppStatus, OAuthStartResponse } from "./types";
+import type { AppStatus, EventReminderPayload, OAuthStartResponse } from "./types";
 
 type LaunchOnLoginState = {
   busy: boolean;
@@ -26,13 +26,10 @@ if (!app) {
 
 const params = new URLSearchParams(window.location.search);
 const isReminderView = params.get("view") === "reminder";
-const REMINDER_WINDOW_MARGIN = 10;
 const CLOCK_TICK_MS = 30_000;
 
 document.documentElement.classList.toggle("reminder-view", isReminderView);
 document.body.classList.toggle("reminder-view", isReminderView);
-
-const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
 const formatDateTime = (value: string) =>
   new Intl.DateTimeFormat("ja-JP", {
@@ -42,9 +39,29 @@ const formatDateTime = (value: string) =>
     minute: "2-digit"
   }).format(new Date(value));
 
+const formatTime = (value: string) =>
+  new Intl.DateTimeFormat("ja-JP", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).format(new Date(value));
+
 const isPastDateTime = (value: string) => {
   const timestamp = new Date(value).getTime();
   return Number.isFinite(timestamp) && timestamp <= Date.now();
+};
+
+const formatReminderStartDelta = (value: string) => {
+  const timestamp = new Date(value).getTime();
+
+  if (!Number.isFinite(timestamp)) {
+    return "";
+  }
+
+  const diffMs = timestamp - Date.now();
+  const minutes = diffMs > 0 ? Math.ceil(diffMs / 60_000) : Math.floor(Math.abs(diffMs) / 60_000);
+
+  return diffMs > 0 ? `（${minutes}分前）` : `（${minutes}分経過）`;
 };
 
 const escapeHtml = (value: string) =>
@@ -68,6 +85,36 @@ const describeError = (error: unknown) => {
   }
 
   return "不明なエラーが発生しました。";
+};
+
+const debugLog = (message: string, payload?: unknown) => {
+  const debugLogsEnabled = Boolean(
+    (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV
+  );
+
+  if (!debugLogsEnabled) {
+    return;
+  }
+
+  if (payload === undefined) {
+    console.info(`[rokind-debug] ${message}`);
+    return;
+  }
+
+  console.info(`[rokind-debug] ${message}`, payload);
+};
+
+const enableDevtoolsContextMenu = () => {
+  document.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+
+    void invoke("show_devtools_context_menu", {
+      x: event.clientX,
+      y: event.clientY
+    }).catch((error) => {
+      console.warn("Failed to show devtools context menu.", error);
+    });
+  });
 };
 
 const enableReminderWindowDrag = () => {
@@ -96,65 +143,6 @@ const sleep = (ms: number) =>
   new Promise<void>((resolve) => {
     window.setTimeout(resolve, ms);
   });
-
-const fitReminderWindowToContent = () => {
-  if (!isReminderView) {
-    return;
-  }
-
-  const reminderCard = document.querySelector<HTMLElement>(".reminder-card");
-  if (!reminderCard) {
-    return;
-  }
-
-  const syncWindowBounds = () => {
-    window.requestAnimationFrame(() => {
-      void (async () => {
-        const reminderWindow = getCurrentWindow();
-        const monitor = await currentMonitor();
-        const cardRect = reminderCard.getBoundingClientRect();
-        let width = Math.ceil(cardRect.width + REMINDER_WINDOW_MARGIN * 2);
-        let height = Math.ceil(cardRect.height + REMINDER_WINDOW_MARGIN * 2);
-
-        if (monitor) {
-          const { scaleFactor, workArea } = monitor;
-          const workAreaWidth = workArea.size.width / scaleFactor;
-          const workAreaHeight = workArea.size.height / scaleFactor;
-          const workAreaX = workArea.position.x / scaleFactor;
-          const workAreaY = workArea.position.y / scaleFactor;
-
-          width = Math.min(width, Math.floor(workAreaWidth - REMINDER_WINDOW_MARGIN * 2));
-          height = Math.min(height, Math.floor(workAreaHeight - REMINDER_WINDOW_MARGIN * 2));
-
-          const x = Math.round(workAreaX + (workAreaWidth - width) / 2);
-          const y = Math.round(
-            clamp(
-              workAreaY + workAreaHeight * 0.05,
-              workAreaY + REMINDER_WINDOW_MARGIN,
-              workAreaY + workAreaHeight - height - REMINDER_WINDOW_MARGIN
-            )
-          );
-
-          await reminderWindow.setSize(new LogicalSize(width, height));
-          await reminderWindow.setPosition(new LogicalPosition(x, y));
-          return;
-        }
-
-        await reminderWindow.setSize(new LogicalSize(width, height));
-      })().catch((error) => {
-        console.warn("Failed to fit reminder window to its content.", error);
-      });
-    });
-  };
-
-  syncWindowBounds();
-
-  document.fonts.ready
-    .then(() => {
-      syncWindowBounds();
-    })
-    .catch(() => undefined);
-};
 
 const copyTextToClipboard = async (value: string) => {
   if (navigator.clipboard?.writeText) {
@@ -370,82 +358,116 @@ const renderMainView = (
   `;
 };
 
-const renderReminderView = (reminder: ActiveReminder | null) => {
-  if (!reminder) {
-    app.innerHTML = `
-      <main class="reminder-shell reminder-shell--empty" data-reminder-drag-region>
-        <div class="reminder-card">
-          <p class="eyebrow">Waiting</p>
-          <h1>次のリマインドを待機しています</h1>
-        </div>
-      </main>
-    `;
-    fitReminderWindowToContent();
-    enableReminderWindowDrag();
+const renderReminderView = (payload: EventReminderPayload | null) => {
+  debugLog("renderReminderView", { eventId: payload?.event_id, phase: payload?.phase });
+
+  if (!payload) {
+    app.innerHTML = "";
     return;
   }
 
-  const isStartingNow = reminder.phase === "starting_now";
-  const eyebrowLabel = isStartingNow ? "current schedule" : "upcomming schedule";
-  const reminderTimeLabel = formatDateTime(reminder.start_at);
-  const isPast = isPastDateTime(reminder.start_at);
+  const isStartingNow = payload.phase === "starting_now";
+  const eyebrowLabel = isStartingNow ? "Current Event" : "Upcoming Event";
+  const reminderTimeLabel = formatTime(payload.start_at);
+  const reminderStartDeltaLabel = formatReminderStartDelta(payload.start_at);
+  const locationLabel = payload.location ?? "場所未設定";
+  const meetingAvailabilityLabel = payload.meeting_url ? "Meetあり" : "Meetなし";
+  const isPast = isPastDateTime(payload.start_at);
+  const reminderStartDeltaClass = `reminder-time-delta ${isPast ? "reminder-time-delta--elapsed" : ""}`.trim();
 
   app.innerHTML = `
     <main class="reminder-shell" data-reminder-drag-region>
       <section class="reminder-card ${isPast ? "reminder-card--past" : ""}">
-        <p class="eyebrow">${eyebrowLabel}</p>
-        <h1>${escapeHtml(reminder.title)}</h1>
-        <p class="reminder-time ${isPast ? "reminder-time--past" : ""}">
-          ${reminderTimeLabel}
-          ${isPast ? '<span class="reminder-time-status">開始時刻を過ぎています</span>' : ""}
-        </p>
-        <p class="reminder-location">${escapeHtml(reminder.location ?? "場所の記載はありません")}</p>
+        <div class="reminder-current">
+          <p class="eyebrow">${eyebrowLabel}</p>
+          <div class="reminder-current-row">
+            <time class="reminder-time ${isPast ? "reminder-time--past" : ""}" datetime="${escapeHtml(payload.start_at)}">
+              <span>${reminderTimeLabel}</span>
+              ${reminderStartDeltaLabel ? `<span class="${reminderStartDeltaClass}">${reminderStartDeltaLabel}</span>` : ""}
+            </time>
+            <h1 class="reminder-title" title="${escapeHtml(payload.title)}">${escapeHtml(payload.title)}</h1>
+          </div>
+          <p class="reminder-location">${escapeHtml(locationLabel)} / ${meetingAvailabilityLabel}</p>
+        </div>
+
         <div class="reminder-actions" data-no-window-drag>
-          <button id="dismiss-button" type="button" class="ghost-button">閉じる</button>
-          <button id="join-button" type="button" class="primary-button" ${reminder.meeting_url ? "" : "disabled"}>Meeting URL を開く</button>
+          <button id="close-reminder-button" type="button" class="ghost-button">閉じる</button>
+          <button id="join-button" type="button" class="primary-button" ${payload.meeting_url ? "" : "disabled"}>Meeting URL を開く</button>
         </div>
       </section>
     </main>
   `;
 
-  document.querySelector<HTMLButtonElement>("#dismiss-button")?.addEventListener("click", async () => {
-    await invoke("dismiss_active_reminder");
-  });
-
-  document.querySelector<HTMLButtonElement>("#join-button")?.addEventListener("click", async () => {
-    if (!reminder.meeting_url) {
-      return;
-    }
-
-    await openUrl(reminder.meeting_url);
-    await invoke("dismiss_active_reminder");
-  });
-
-  fitReminderWindowToContent();
   enableReminderWindowDrag();
 };
 
 const bootReminderView = async () => {
-  renderReminderView(null);
+  const eventId = params.get("event_id");
 
-  let status = await invoke<AppStatus>("get_app_status");
-  renderReminderView(status.active_reminder);
+  if (!eventId) {
+    getCurrentWindow().close().catch(() => undefined);
+    return;
+  }
+
+  let currentPayload: EventReminderPayload | null = await invoke<EventReminderPayload | null>(
+    "get_event_reminder",
+    { eventId }
+  );
+
+  debugLog("bootReminderView.initial", {
+    eventId,
+    phase: currentPayload?.phase ?? null
+  });
+
+  const redraw = () => {
+    renderReminderView(currentPayload);
+
+    if (!currentPayload) {
+      return;
+    }
+
+    const payload = currentPayload;
+
+    document.querySelector<HTMLButtonElement>("#close-reminder-button")?.addEventListener("click", async () => {
+      debugLog("close_reminder.click", { eventId: payload.event_id });
+      await invoke("dismiss_event_reminder", { eventId: payload.event_id });
+    });
+
+    document.querySelector<HTMLButtonElement>("#join-button")?.addEventListener("click", async () => {
+      if (!payload.meeting_url) {
+        return;
+      }
+
+      debugLog("join_button.click", { eventId: payload.event_id });
+      await openUrl(payload.meeting_url);
+      await invoke("dismiss_event_reminder", { eventId: payload.event_id });
+    });
+  };
+
+  redraw();
+
   window.setInterval(() => {
-    renderReminderView(status.active_reminder);
+    redraw();
   }, CLOCK_TICK_MS);
 
-  await listen<ActiveReminder | null>("reminder-updated", (event) => {
-    status = { ...status, active_reminder: event.payload };
-    renderReminderView(status.active_reminder);
+  await listen<EventReminderPayload | null>("event-reminder-update", (event) => {
+    debugLog("event.event-reminder-update", { payload: event.payload });
+
+    if (event.payload && event.payload.event_id !== eventId) {
+      return;
+    }
+
+    currentPayload = event.payload;
+
+    if (!currentPayload) {
+      getCurrentWindow().close().catch(() => undefined);
+      return;
+    }
+
+    redraw();
   });
 
-  await listen<AppStatus>("app-status-updated", (event) => {
-    status = event.payload;
-    renderReminderView(status.active_reminder);
-  });
-
-  const currentWindow = getCurrentWindow();
-  currentWindow.setFocus().catch(() => undefined);
+  getCurrentWindow().setFocus().catch(() => undefined);
 };
 
 const bootMainView = async () => {
@@ -642,11 +664,6 @@ const bootMainView = async () => {
     void pollAuthUntilSettled();
   }
 
-  await listen<ActiveReminder | null>("reminder-updated", (event) => {
-    status = { ...status, active_reminder: event.payload };
-    redraw();
-  });
-
   await listen<AppStatus>("app-status-updated", (event) => {
     status = event.payload;
     redraw();
@@ -673,6 +690,8 @@ const bootMainView = async () => {
     redraw();
   });
 };
+
+enableDevtoolsContextMenu();
 
 if (isReminderView) {
   void bootReminderView();
