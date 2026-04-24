@@ -1,0 +1,71 @@
+name: "publish"
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    if: github.event.release.prerelease == true
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: "macos-latest"
+            args: "--target aarch64-apple-darwin"
+          - platform: "ubuntu-22.04"
+            args: ""
+          - platform: "windows-latest"
+            args: ""
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || '' }}
+
+      - name: install dependencies (ubuntu only)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: install frontend dependencies
+        run: pnpm install
+
+      # --- バージョン自動書き換えステップ ---
+      - name: Sync version from tag
+        shell: bash
+        run: |
+          # タグ名(v1.2.3)から'v'を除去して1.2.3にする
+          VERSION=${GITHUB_REF_NAME#v}
+          echo "Syncing version to $VERSION"
+
+          # tauri.conf.json のバージョンを更新
+          jq ".package.version = \"$VERSION\"" src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
+
+          # package.json のバージョンを更新
+          jq ".version = \"$VERSION\"" package.json > tmp.json && mv tmp.json package.json
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.event.release.tag_name }}
+          releaseId: ${{ github.event.release.id }}
+          args: ${{ matrix.args }}
