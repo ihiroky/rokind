@@ -170,6 +170,11 @@ button:disabled {
   gap: 8px;
 }
 
+.field span {
+  color: #26334f;
+  font-weight: 700;
+}
+
 .settings-card {
   margin-top: 20px;
   padding: 20px;
@@ -181,6 +186,18 @@ button:disabled {
 .settings-card h3 {
   margin: 0;
   font-size: 1.2rem;
+}
+
+.oauth-form {
+  display: grid;
+  grid-template-columns: repeat(1, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.oauth-form .action-row {
+  grid-column: 1 / -1;
+  margin-top: 2px;
 }
 
 .toggle-row {
@@ -539,6 +556,10 @@ button:disabled {
 
   .toggle-row {
     align-items: flex-start;
+  }
+
+  .oauth-form {
+    grid-template-columns: 1fr;
   }
 
 }

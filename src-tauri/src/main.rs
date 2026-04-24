@@ -52,10 +52,18 @@ type CommandResult<T> = std::result::Result<T, String>;
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct PersistentState {
+    google_oauth_config: Option<GoogleOAuthConfig>,
     token: Option<TokenState>,
     cached_events: Vec<CalendarEventSummary>,
     last_sync_at: Option<DateTime<Utc>>,
     last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(default)]
+struct GoogleOAuthConfig {
+    client_id: Option<String>,
+    client_secret: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,6 +163,10 @@ impl EventReminderRecord {
 struct AppStatus {
     client_id_configured: bool,
     client_secret_configured: bool,
+    google_client_id: Option<String>,
+    google_client_secret: Option<String>,
+    google_client_id_using_initial: bool,
+    google_client_secret_using_initial: bool,
     signed_in: bool,
     polling_enabled: bool,
     auth_in_progress: bool,
@@ -177,6 +189,8 @@ struct PendingAuth {
     code_verifier: String,
     redirect_uri: String,
     auth_url: String,
+    client_id: String,
+    client_secret: Option<String>,
 }
 
 #[derive(Debug)]
@@ -253,6 +267,7 @@ fn run() {
         .manage(AppStateStore::default())
         .invoke_handler(tauri::generate_handler![
             get_app_status,
+            save_google_oauth_settings,
             start_google_auth,
             disconnect_google,
             refresh_events,
@@ -274,17 +289,32 @@ fn run() {
         .expect("error while running tauri application");
 }
 
-fn oauth_config_diagnostics() -> String {
-    let id_state = if google_client_id().is_some() {
-        "GOOGLE_CLIENT_ID: embedded"
+async fn oauth_config_diagnostics(app: &AppHandle) -> String {
+    let stored = stored_google_oauth_config(app).await;
+    let initial = initial_google_oauth_config();
+
+    let id_state = if let Some(stored) = stored.as_ref() {
+        if trimmed_config_value(stored.client_id.as_deref().unwrap_or_default()).is_some() {
+            "GOOGLE_CLIENT_ID: saved"
+        } else {
+            "GOOGLE_CLIENT_ID: saved empty"
+        }
+    } else if initial.client_id.is_some() {
+        "GOOGLE_CLIENT_ID: initial from build"
     } else {
-        "GOOGLE_CLIENT_ID: missing in build"
+        "GOOGLE_CLIENT_ID: missing"
     };
 
-    let secret_state = if google_client_secret().is_some() {
-        "GOOGLE_CLIENT_SECRET: embedded"
+    let secret_state = if let Some(stored) = stored.as_ref() {
+        if trimmed_config_value(stored.client_secret.as_deref().unwrap_or_default()).is_some() {
+            "GOOGLE_CLIENT_SECRET: saved"
+        } else {
+            "GOOGLE_CLIENT_SECRET: saved empty"
+        }
+    } else if initial.client_secret.is_some() {
+        "GOOGLE_CLIENT_SECRET: initial from build"
     } else {
-        "GOOGLE_CLIENT_SECRET: missing in build"
+        "GOOGLE_CLIENT_SECRET: missing"
     };
 
     let source = option_env!("ROKIND_OAUTH_CONFIG_SOURCE").unwrap_or("build-time source: unknown");
@@ -391,6 +421,10 @@ fn show_devtools_context_menu(
     .map_err(|error| error.to_string())?;
 
     let menu = MenuBuilder::new(&app)
+        .cut_with_text("切り取り")
+        .copy_with_text("コピー")
+        .paste_with_text("貼り付け")
+        .separator()
         .item(&item)
         .build()
         .map_err(|error| error.to_string())?;
@@ -760,10 +794,9 @@ async fn sync_calendar_once(app: &AppHandle) -> Result<Vec<CalendarEventSummary>
         existing_token = persistent.token.clone();
     }
 
-    let client_id = google_client_id();
-    let client_secret = google_client_secret();
+    let oauth_config = google_oauth_config(app).await;
 
-    let Some(client_id) = client_id else {
+    let Some(client_id) = oauth_config.client_id else {
         return Ok(vec![]);
     };
 
@@ -771,16 +804,17 @@ async fn sync_calendar_once(app: &AppHandle) -> Result<Vec<CalendarEventSummary>
         return Ok(vec![]);
     };
 
-    let token = match ensure_access_token(&client_id, client_secret.as_deref(), token).await {
-        Ok(token) => token,
-        Err(error) => {
-            let message = error.to_string();
-            if error_requires_reconnect(&message) {
-                prompt_reconnect(app, &message).await?;
+    let token =
+        match ensure_access_token(&client_id, oauth_config.client_secret.as_deref(), token).await {
+            Ok(token) => token,
+            Err(error) => {
+                let message = error.to_string();
+                if error_requires_reconnect(&message) {
+                    prompt_reconnect(app, &message).await?;
+                }
+                return Err(error);
             }
-            return Err(error);
-        }
-    };
+        };
     let events = match fetch_calendar_events(&token.access_token).await {
         Ok(events) => events,
         Err(error) => {
@@ -980,12 +1014,44 @@ fn env_config_value(name: &str) -> Option<String> {
     }
 }
 
-fn google_client_id() -> Option<String> {
-    env_config_value("GOOGLE_CLIENT_ID")
+fn initial_google_oauth_config() -> GoogleOAuthConfig {
+    GoogleOAuthConfig {
+        client_id: env_config_value("GOOGLE_CLIENT_ID"),
+        client_secret: env_config_value("GOOGLE_CLIENT_SECRET"),
+    }
 }
 
-fn google_client_secret() -> Option<String> {
-    env_config_value("GOOGLE_CLIENT_SECRET")
+fn effective_google_oauth_config(stored: Option<&GoogleOAuthConfig>) -> GoogleOAuthConfig {
+    if let Some(stored) = stored {
+        return GoogleOAuthConfig {
+            client_id: trimmed_config_value(stored.client_id.as_deref().unwrap_or_default()),
+            client_secret: trimmed_config_value(
+                stored.client_secret.as_deref().unwrap_or_default(),
+            ),
+        };
+    }
+
+    initial_google_oauth_config()
+}
+
+async fn stored_google_oauth_config(app: &AppHandle) -> Option<GoogleOAuthConfig> {
+    let state = app.state::<AppStateStore>();
+    let persistent = state.persistent.lock().await;
+    persistent.google_oauth_config.clone()
+}
+
+async fn google_oauth_config(app: &AppHandle) -> GoogleOAuthConfig {
+    let stored = stored_google_oauth_config(app).await;
+    effective_google_oauth_config(stored.as_ref())
+}
+
+fn trimmed_config_value(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 async fn parse_google_error(response: reqwest::Response) -> String {
@@ -1281,13 +1347,9 @@ async fn complete_google_auth(
         return Err(anyhow!("OAuth state が一致しませんでした"));
     }
 
-    let client_id =
-        google_client_id().ok_or_else(|| anyhow!("GOOGLE_CLIENT_ID を .env に設定してください"))?;
-    let client_secret = google_client_secret();
-
     let token = exchange_authorization_code(
-        &client_id,
-        client_secret.as_deref(),
+        &pending.client_id,
+        pending.client_secret.as_deref(),
         &callback.code,
         &pending.redirect_uri,
         &pending.code_verifier,
@@ -1313,8 +1375,10 @@ async fn get_app_status(app: AppHandle) -> CommandResult<AppStatus> {
     let state = app.state::<AppStateStore>();
     let persistent = state.persistent.lock().await.clone();
     let auth_in_progress = state.pending_auth.lock().await.is_some();
-    let client_id_configured = google_client_id().is_some();
-    let client_secret_configured = google_client_secret().is_some();
+    let initial = initial_google_oauth_config();
+    let oauth_config = effective_google_oauth_config(persistent.google_oauth_config.as_ref());
+    let client_id_configured = oauth_config.client_id.is_some();
+    let client_secret_configured = oauth_config.client_secret.is_some();
     let can_start_google_auth = client_id_configured && !auth_in_progress;
     let signed_in = persistent
         .token
@@ -1328,12 +1392,18 @@ async fn get_app_status(app: AppHandle) -> CommandResult<AppStatus> {
     Ok(AppStatus {
         client_id_configured,
         client_secret_configured,
+        google_client_id: oauth_config.client_id,
+        google_client_secret: oauth_config.client_secret,
+        google_client_id_using_initial: persistent.google_oauth_config.is_none()
+            && initial.client_id.is_some(),
+        google_client_secret_using_initial: persistent.google_oauth_config.is_none()
+            && initial.client_secret.is_some(),
         signed_in,
         polling_enabled: client_id_configured && signed_in,
         auth_in_progress,
         can_start_google_auth,
         auto_reconnect_ready,
-        oauth_config_diagnostics: oauth_config_diagnostics(),
+        oauth_config_diagnostics: oauth_config_diagnostics(&app).await,
         upcoming_events: persistent.cached_events,
         last_sync_at: persistent.last_sync_at.map(|value| value.to_rfc3339()),
         last_error: persistent.last_error,
@@ -1341,8 +1411,66 @@ async fn get_app_status(app: AppHandle) -> CommandResult<AppStatus> {
 }
 
 #[tauri::command]
+async fn save_google_oauth_settings(
+    app: AppHandle,
+    client_id: String,
+    client_secret: String,
+) -> CommandResult<AppStatus> {
+    let next_stored = GoogleOAuthConfig {
+        client_id: Some(client_id.trim().to_string()),
+        client_secret: Some(client_secret.trim().to_string()),
+    };
+    apply_google_oauth_settings(app, next_stored).await
+}
+
+async fn apply_google_oauth_settings(
+    app: AppHandle,
+    next_stored: GoogleOAuthConfig,
+) -> CommandResult<AppStatus> {
+    let previous_effective = google_oauth_config(&app).await;
+    let next_effective = effective_google_oauth_config(Some(&next_stored));
+    let oauth_changed = previous_effective != next_effective;
+
+    {
+        let state = app.state::<AppStateStore>();
+        let mut persistent = state.persistent.lock().await;
+        persistent.google_oauth_config = Some(next_stored);
+        persistent.last_error = None;
+
+        if oauth_changed {
+            persistent.token = None;
+            persistent.cached_events.clear();
+            persistent.last_sync_at = None;
+        }
+    }
+
+    if oauth_changed {
+        {
+            let state = app.state::<AppStateStore>();
+            let mut pending_auth = state.pending_auth.lock().await;
+            *pending_auth = None;
+        }
+        {
+            let state = app.state::<AppStateStore>();
+            let mut reminder_states = state.event_reminder_states.lock().await;
+            reminder_states.clear();
+        }
+        close_all_event_reminder_windows(&app).await;
+    }
+
+    persist_state(&app)
+        .await
+        .map_err(|error| error.to_string())?;
+    let status = get_app_status(app.clone()).await?;
+    let _ = app.emit("app-status-updated", status.clone());
+    Ok(status)
+}
+
+#[tauri::command]
 async fn start_google_auth(app: AppHandle) -> CommandResult<OAuthStartResponse> {
-    let client_id = google_client_id()
+    let oauth_config = google_oauth_config(&app).await;
+    let client_id = oauth_config
+        .client_id
         .ok_or_else(|| "GOOGLE_CLIENT_ID を .env に設定してください".to_string())?;
 
     {
@@ -1375,6 +1503,8 @@ async fn start_google_auth(app: AppHandle) -> CommandResult<OAuthStartResponse> 
         code_verifier,
         redirect_uri,
         auth_url: auth_url.clone(),
+        client_id,
+        client_secret: oauth_config.client_secret,
     };
 
     {
