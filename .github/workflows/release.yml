@@ -63,7 +63,7 @@ jobs:
           fi
 
           # [package] セクションの version = "x.x.x" を置換
-          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" src-tauri/Cargo.toml
+          sed -i.bak "s/^version = \".*\"/version = \"$VERSION\"/" src-tauri/Cargo.toml && rm src-tauri/Cargo.toml.bak
 
       - uses: tauri-apps/tauri-action@v0
         env:
