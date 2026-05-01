@@ -19,6 +19,13 @@ export interface EventReminderPayload {
   location: string | null;
 }
 
+export interface AuthReconnectNoticePayload {
+  message: string;
+  detail: string | null;
+  first_detected_at: string;
+  last_shown_at: string | null;
+}
+
 export interface AppStatus {
   client_id_configured: boolean;
   client_secret_configured: boolean;

@@ -10,7 +10,12 @@ import {
 } from "@tauri-apps/plugin-autostart";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
-import type { AppStatus, EventReminderPayload, OAuthStartResponse } from "./types";
+import type {
+  AppStatus,
+  AuthReconnectNoticePayload,
+  EventReminderPayload,
+  OAuthStartResponse
+} from "./types";
 
 type LaunchOnLoginState = {
   busy: boolean;
@@ -35,10 +40,12 @@ if (!app) {
 
 const params = new URLSearchParams(window.location.search);
 const isReminderView = params.get("view") === "reminder";
+const isAuthReconnectView = params.get("view") === "auth_reconnect";
+const isNoticeView = isReminderView || isAuthReconnectView;
 const CLOCK_TICK_MS = 30_000;
 
-document.documentElement.classList.toggle("reminder-view", isReminderView);
-document.body.classList.toggle("reminder-view", isReminderView);
+document.documentElement.classList.toggle("reminder-view", isNoticeView);
+document.body.classList.toggle("reminder-view", isNoticeView);
 
 const formatDateTime = (value: string) =>
   new Intl.DateTimeFormat("ja-JP", {
@@ -525,6 +532,68 @@ const bootReminderView = async () => {
   getCurrentWindow().setFocus().catch(() => undefined);
 };
 
+const renderAuthReconnectView = (payload: AuthReconnectNoticePayload | null) => {
+  debugLog("renderAuthReconnectView", { active: Boolean(payload) });
+
+  if (!payload) {
+    app.innerHTML = "";
+    return;
+  }
+
+  app.innerHTML = `
+    <main class="reminder-shell" data-reminder-drag-region>
+      <section class="reminder-card auth-reconnect-card">
+        <div class="reminder-current">
+          <p class="eyebrow">Reconnect Required</p>
+          <h1 class="reminder-title auth-reconnect-title" title="${escapeHtml(payload.message)}">${escapeHtml(payload.message)}</h1>
+          <p class="reminder-location auth-reconnect-summary">再接続すると予定の取得と通知を再開します</p>
+          ${
+            payload.detail
+              ? `<p class="auth-reconnect-detail" title="${escapeHtml(payload.detail)}">${escapeHtml(payload.detail)}</p>`
+              : ""
+          }
+        </div>
+
+        <div class="reminder-actions" data-no-window-drag>
+          <button id="close-auth-reconnect-button" type="button" class="ghost-button">閉じる</button>
+          <button id="reconnect-button" type="button" class="primary-button">再接続</button>
+        </div>
+      </section>
+    </main>
+  `;
+
+  enableReminderWindowDrag();
+};
+
+const bootAuthReconnectView = async () => {
+  let currentPayload = await invoke<AuthReconnectNoticePayload | null>("get_auth_reconnect_notice");
+
+  const redraw = () => {
+    renderAuthReconnectView(currentPayload);
+
+    if (!currentPayload) {
+      getCurrentWindow().close().catch(() => undefined);
+      return;
+    }
+
+    document.querySelector<HTMLButtonElement>("#close-auth-reconnect-button")?.addEventListener("click", async () => {
+      await invoke("dismiss_auth_reconnect_notice");
+    });
+
+    document.querySelector<HTMLButtonElement>("#reconnect-button")?.addEventListener("click", async () => {
+      await invoke("open_main_window_for_reconnect");
+    });
+  };
+
+  redraw();
+
+  window.setInterval(() => {
+    redraw();
+  }, CLOCK_TICK_MS);
+
+  getCurrentWindow().setFocus().catch(() => undefined);
+};
+
 const bootMainView = async () => {
   let status = await invoke<AppStatus>("get_app_status");
   let busyMessage = "";
@@ -840,6 +909,8 @@ enableDevtoolsContextMenu();
 
 if (isReminderView) {
   void bootReminderView();
+} else if (isAuthReconnectView) {
+  void bootAuthReconnectView();
 } else {
   void bootMainView();
 }
