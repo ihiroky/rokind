@@ -468,6 +468,7 @@ const bootReminderView = async () => {
     "get_event_reminder",
     { eventId }
   );
+  let reminderActionInFlight = false;
 
   debugLog("bootReminderView.initial", {
     eventId,
@@ -484,8 +485,21 @@ const bootReminderView = async () => {
     const payload = currentPayload;
 
     document.querySelector<HTMLButtonElement>("#close-reminder-button")?.addEventListener("click", async () => {
+      if (reminderActionInFlight) {
+        return;
+      }
+
+      reminderActionInFlight = true;
       debugLog("close_reminder.click", { eventId: payload.event_id });
-      await invoke("dismiss_event_reminder", { eventId: payload.event_id });
+      try {
+        await invoke("dismiss_event_reminder", { eventId: payload.event_id });
+      } catch (error) {
+        reminderActionInFlight = false;
+        debugLog("close_reminder.failed", {
+          eventId: payload.event_id,
+          error: describeError(error)
+        });
+      }
     });
 
     document.querySelector<HTMLButtonElement>("#join-button")?.addEventListener("click", async () => {
@@ -493,9 +507,30 @@ const bootReminderView = async () => {
         return;
       }
 
+      if (reminderActionInFlight) {
+        return;
+      }
+
+      reminderActionInFlight = true;
       debugLog("join_button.click", { eventId: payload.event_id });
-      await openUrl(payload.meeting_url);
-      await invoke("dismiss_event_reminder", { eventId: payload.event_id });
+      try {
+        await openUrl(payload.meeting_url);
+      } catch (error) {
+        debugLog("join_button.open_failed", {
+          eventId: payload.event_id,
+          error: describeError(error)
+        });
+      } finally {
+        try {
+          await invoke("dismiss_event_reminder", { eventId: payload.event_id });
+        } catch (error) {
+          reminderActionInFlight = false;
+          debugLog("join_button.dismiss_failed", {
+            eventId: payload.event_id,
+            error: describeError(error)
+          });
+        }
+      }
     });
   };
 
