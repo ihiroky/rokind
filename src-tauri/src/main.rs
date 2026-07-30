@@ -205,6 +205,7 @@ struct AppStateStore {
     pending_auth: Mutex<Option<PendingAuth>>,
     event_reminder_states: Mutex<HashMap<String, EventReminderRecord>>,
     sync_flow: Mutex<()>,
+    reminder_window_flow: Mutex<()>,
     is_quitting: AtomicBool,
 }
 
@@ -499,6 +500,20 @@ fn event_window_label(event_id: &str, monitor_index: usize) -> String {
     )
 }
 
+fn reminder_window_labels(app: &AppHandle, event_id: &str) -> Vec<String> {
+    let event_prefix = format!(
+        "{}{}_",
+        REMINDER_WINDOW_PREFIX,
+        sanitize_for_window_label(event_id)
+    );
+
+    app.webview_windows()
+        .keys()
+        .filter(|label| label.starts_with(&event_prefix))
+        .cloned()
+        .collect()
+}
+
 fn sorted_showing_records(
     states: &HashMap<String, EventReminderRecord>,
 ) -> Vec<EventReminderRecord> {
@@ -520,6 +535,7 @@ fn sorted_showing_records(
 
 async fn open_event_reminder_windows(app: &AppHandle, record: &EventReminderRecord) -> Result<()> {
     let state = app.state::<AppStateStore>();
+    let _window_flow = state.reminder_window_flow.lock().await;
     let reminder_states = state.event_reminder_states.lock().await;
     let active = sorted_showing_records(&reminder_states);
     let slot = active
@@ -539,6 +555,17 @@ async fn open_event_reminder_windows(app: &AppHandle, record: &EventReminderReco
         .available_monitors()
         .context("failed to enumerate monitors")?;
     let payload = record.to_payload();
+
+    // Close every existing window for this event before recreating it. Do not
+    // rely on the current monitor list here: it may differ from the list used
+    // when the old windows were created.
+    for label in reminder_window_labels(app, &record.event_id) {
+        if let Some(existing) = app.get_webview_window(&label) {
+            if let Err(error) = existing.close() {
+                debug_log!("close stale reminder window failed: label={label} error={error}");
+            }
+        }
+    }
 
     for (monitor_idx, monitor) in monitors.iter().enumerate() {
         let work_area = monitor.work_area();
@@ -561,10 +588,6 @@ async fn open_event_reminder_windows(app: &AppHandle, record: &EventReminderReco
         let y = base_y + slot as f64 * (height + REMINDER_WINDOW_MARGIN);
 
         let label = event_window_label(&record.event_id, monitor_idx);
-
-        if let Some(existing) = app.get_webview_window(&label) {
-            let _ = existing.close();
-        }
 
         WebviewWindowBuilder::new(
             app,
@@ -594,15 +617,27 @@ async fn open_event_reminder_windows(app: &AppHandle, record: &EventReminderReco
 
 async fn close_event_reminder_windows(app: &AppHandle, event_id: &str) -> Result<()> {
     debug_log!("close_event_reminder_windows: event_id={event_id}");
-    let monitors = app
-        .available_monitors()
-        .context("failed to enumerate monitors")?;
-    for (monitor_idx, _) in monitors.iter().enumerate() {
-        let label = event_window_label(event_id, monitor_idx);
+    let state = app.state::<AppStateStore>();
+    let _window_flow = state.reminder_window_flow.lock().await;
+
+    let labels = reminder_window_labels(app, event_id);
+    debug_log!("close_event_reminder_windows: event_id={event_id} windows={labels:?}");
+    let mut first_error = None;
+    for label in labels {
         if let Some(window) = app.get_webview_window(&label) {
-            let _ = window.close();
+            if let Err(error) = window.close() {
+                debug_log!("close reminder window failed: label={label} error={error}");
+                if first_error.is_none() {
+                    first_error = Some(anyhow!("failed to close reminder window {label}: {error}"));
+                }
+            }
         }
     }
+
+    if let Some(error) = first_error {
+        return Err(error);
+    }
+
     Ok(())
 }
 
@@ -616,20 +651,16 @@ async fn upgrade_event_reminder_phase(app: &AppHandle, event_id: &str) -> Result
     let payload = record.to_payload();
     drop(reminder_states);
 
-    let monitors = app
-        .available_monitors()
-        .context("failed to enumerate monitors")?;
-    for (monitor_idx, _) in monitors.iter().enumerate() {
-        let label = event_window_label(event_id, monitor_idx);
-        if app.get_webview_window(&label).is_some() {
-            let _ = app.emit_to(label.as_str(), "event-reminder-update", &payload);
-        }
+    for label in reminder_window_labels(app, event_id) {
+        let _ = app.emit_to(label.as_str(), "event-reminder-update", &payload);
     }
 
     Ok(())
 }
 
 async fn close_all_event_reminder_windows(app: &AppHandle) {
+    let state = app.state::<AppStateStore>();
+    let _window_flow = state.reminder_window_flow.lock().await;
     let labels: Vec<String> = app
         .webview_windows()
         .keys()
@@ -639,7 +670,9 @@ async fn close_all_event_reminder_windows(app: &AppHandle) {
 
     for label in labels {
         if let Some(window) = app.get_webview_window(&label) {
-            let _ = window.close();
+            if let Err(error) = window.close() {
+                debug_log!("close reminder window failed: label={label} error={error}");
+            }
         }
     }
 }
@@ -1570,6 +1603,7 @@ async fn refresh_events(app: AppHandle) -> CommandResult<AppStatus> {
 #[tauri::command]
 async fn dismiss_event_reminder(app: AppHandle, event_id: String) -> CommandResult<()> {
     let state = app.state::<AppStateStore>();
+    let _sync_flow = state.sync_flow.lock().await;
     let now = Utc::now();
 
     {
